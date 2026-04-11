@@ -1,0 +1,7 @@
+**Quick summary:**
+1. Push repo to GitHub (with render.yaml)
+2. Go to https://dashboard.render.com
+3. New → Web Service
+4. Connect repo
+5. Add BOT_TOKEN and OPENAI_API_KEY as environment variables
+6. Deploy

@@ -1,0 +1,14 @@
+(.venv) PS C:\Users\Big Dan\Desktop\ClipScript AI bot> python app_unified.py
+C:\Users\Big Dan\Desktop\ClipScript AI bot\.venv/Scripts\python.exe: can't open file 'C:\\Users\\Big Dan\\Desktop\\ClipScript AI bot\\app_unified.py': [Errno 2] No such file or directory
+(.venv) PS C:\Users\Big Dan\Desktop\ClipScript AI bot> cd ClipScript Ai
+Set-Location : A positional parameter cannot be found that accepts argument 
+'Ai'.
+At line:1 char:1
++ cd ClipScript Ai
++ ~~~~~~~~~~~~~~~~
+    + CategoryInfo          : InvalidArgument: (:) [Set-Location], ParameterBi 
+   ndingException
+    + FullyQualifiedErrorId : PositionalParameterNotFound,Microsoft.PowerShell 
+   .Commands.SetLocationCommand
+ 
+(.venv) PS C:\Users\Big Dan\Desktop\ClipScript AI bot> 

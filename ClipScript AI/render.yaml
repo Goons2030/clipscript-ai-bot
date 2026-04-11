@@ -1,0 +1,23 @@
+services:
+  - type: worker
+    name: clipscript-ai-bot
+    env: python
+    
+    # Build command - installs FFmpeg + dependencies
+    buildCommand: >
+      apt-get update &&
+      apt-get install -y ffmpeg &&
+      pip install -r requirements.txt
+    
+    # Start the bot
+    startCommand: python main.py
+    
+    # Python version (3.13 recommended, 3.11+ supported)
+    runtime: python-3.13
+    
+    # Environment variables (defined in Render dashboard, NOT here)
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+      - key: DEEPGRAM_API_KEY
+        sync: false

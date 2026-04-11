@@ -1,0 +1,742 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ClipScript AI – TikTok to Text Instantly</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        :root {
+            --bg-dark: #0a0a0a;
+            --bg-secondary: #1a1a1a;
+            --accent-primary: #00ff00;
+            --accent-secondary: #ffff00;
+            --text-primary: #ffffff;
+            --text-secondary: #999999;
+            --border-color: #333333;
+        }
+
+        html, body {
+            width: 100%;
+            height: 100%;
+            background: var(--bg-dark);
+            color: var(--text-primary);
+            font-family: 'Courier New', monospace;
+            overflow-x: hidden;
+        }
+
+        /* Typography */
+        h1 {
+            font-size: 3.5rem;
+            font-weight: 900;
+            letter-spacing: -2px;
+            line-height: 1.1;
+            text-transform: uppercase;
+            font-family: 'IBM Plex Mono', monospace;
+        }
+
+        h2 {
+            font-size: 2rem;
+            font-weight: 700;
+            letter-spacing: -1px;
+            font-family: 'IBM Plex Mono', monospace;
+        }
+
+        h3 {
+            font-size: 1.3rem;
+            font-weight: 600;
+            letter-spacing: 0.5px;
+        }
+
+        p, li {
+            font-size: 1rem;
+            line-height: 1.6;
+            color: var(--text-secondary);
+        }
+
+        a {
+            color: var(--accent-primary);
+            text-decoration: none;
+            border-bottom: 1px solid var(--accent-primary);
+            transition: all 0.3s ease;
+        }
+
+        a:hover {
+            color: var(--accent-secondary);
+            border-bottom-color: var(--accent-secondary);
+        }
+
+        /* Layout */
+        .container {
+            max-width: 100%;
+            margin: 0 auto;
+            padding: 0 2rem;
+        }
+
+        .nav {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            z-index: 1000;
+            background: rgba(10, 10, 10, 0.95);
+            border-bottom: 1px solid var(--border-color);
+            padding: 1.5rem 2rem;
+            backdrop-filter: blur(10px);
+        }
+
+        .nav-content {
+            max-width: 1400px;
+            margin: 0 auto;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .logo {
+            font-size: 1.5rem;
+            font-weight: 900;
+            letter-spacing: -1px;
+            color: var(--accent-primary);
+            text-transform: uppercase;
+        }
+
+        .nav-links {
+            display: flex;
+            gap: 2rem;
+            list-style: none;
+        }
+
+        .nav-links a {
+            color: var(--text-secondary);
+            border: none;
+            transition: color 0.3s;
+        }
+
+        .nav-links a:hover {
+            color: var(--accent-primary);
+        }
+
+        /* Hero Section */
+        .hero {
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding-top: 80px;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .hero::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: 
+                linear-gradient(135deg, rgba(0, 255, 0, 0.03) 0%, transparent 50%),
+                linear-gradient(45deg, transparent 50%, rgba(255, 255, 0, 0.02) 100%);
+            pointer-events: none;
+        }
+
+        .hero-content {
+            position: relative;
+            z-index: 10;
+            text-align: left;
+            max-width: 800px;
+            animation: fadeInUp 0.8s ease;
+        }
+
+        .hero-content h1 {
+            margin-bottom: 1.5rem;
+            color: var(--text-primary);
+            animation: slideInDown 0.6s ease;
+        }
+
+        .hero-content h1 .highlight {
+            color: var(--accent-primary);
+        }
+
+        .hero-content p {
+            font-size: 1.25rem;
+            margin-bottom: 2rem;
+            line-height: 1.8;
+            color: var(--text-secondary);
+            animation: slideInUp 0.6s ease 0.2s both;
+        }
+
+        .cta-button {
+            display: inline-block;
+            padding: 1rem 2.5rem;
+            background: var(--accent-primary);
+            color: var(--bg-dark);
+            border: 2px solid var(--accent-primary);
+            font-weight: 900;
+            font-size: 1rem;
+            cursor: pointer;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            transition: all 0.3s ease;
+            font-family: 'Courier New', monospace;
+            animation: slideInUp 0.6s ease 0.4s both;
+        }
+
+        .cta-button:hover {
+            background: var(--bg-dark);
+            color: var(--accent-primary);
+            box-shadow: 0 0 20px rgba(0, 255, 0, 0.5);
+        }
+
+        /* App Container */
+        .app-view {
+            display: none;
+            min-height: 100vh;
+            padding: 120px 2rem 2rem;
+        }
+
+        .app-view.active {
+            display: block;
+            animation: fadeInUp 0.6s ease;
+        }
+
+        .hero-view.active {
+            display: flex;
+            animation: fadeInUp 0.6s ease;
+        }
+
+        /* Transcriber Section */
+        .transcriber-container {
+            max-width: 900px;
+            margin: 0 auto;
+        }
+
+        .transcriber-title {
+            margin-bottom: 2rem;
+        }
+
+        .transcriber-title h2 {
+            margin-bottom: 0.5rem;
+        }
+
+        .transcriber-title p {
+            font-size: 1rem;
+            color: var(--text-secondary);
+        }
+
+        /* Input Box */
+        .input-group {
+            display: flex;
+            gap: 1rem;
+            margin-bottom: 2rem;
+            flex-wrap: wrap;
+        }
+
+        .input-group input {
+            flex: 1;
+            min-width: 250px;
+            padding: 1rem;
+            background: var(--bg-secondary);
+            border: 2px solid var(--border-color);
+            color: var(--text-primary);
+            font-family: 'Courier New', monospace;
+            font-size: 1rem;
+            transition: all 0.3s;
+        }
+
+        .input-group input:focus {
+            outline: none;
+            border-color: var(--accent-primary);
+            box-shadow: 0 0 15px rgba(0, 255, 0, 0.2);
+        }
+
+        .input-group input::placeholder {
+            color: var(--text-secondary);
+        }
+
+        .submit-btn {
+            padding: 1rem 2rem;
+            background: var(--accent-primary);
+            color: var(--bg-dark);
+            border: 2px solid var(--accent-primary);
+            font-weight: 900;
+            cursor: pointer;
+            text-transform: uppercase;
+            font-size: 1rem;
+            font-family: 'Courier New', monospace;
+            transition: all 0.3s;
+        }
+
+        .submit-btn:hover {
+            background: var(--bg-dark);
+            color: var(--accent-primary);
+            box-shadow: 0 0 20px rgba(0, 255, 0, 0.5);
+        }
+
+        .submit-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        /* Status Message */
+        .status {
+            padding: 1.5rem;
+            margin-bottom: 2rem;
+            border-left: 4px solid var(--accent-primary);
+            background: rgba(0, 255, 0, 0.05);
+            display: none;
+        }
+
+        .status.active {
+            display: block;
+            animation: slideInDown 0.4s ease;
+        }
+
+        .status.error {
+            border-left-color: #ff4444;
+            background: rgba(255, 68, 68, 0.05);
+        }
+
+        .status.error h3 {
+            color: #ff4444;
+        }
+
+        .status.success {
+            border-left-color: var(--accent-primary);
+        }
+
+        .status.success h3 {
+            color: var(--accent-primary);
+        }
+
+        .status h3 {
+            margin-bottom: 0.5rem;
+            text-transform: uppercase;
+            font-size: 0.9rem;
+            letter-spacing: 1px;
+        }
+
+        .status p {
+            font-size: 0.95rem;
+        }
+
+        .spinner {
+            display: inline-block;
+            width: 1rem;
+            height: 1rem;
+            border: 2px solid var(--accent-primary);
+            border-right-color: transparent;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            margin-right: 0.5rem;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        /* Output */
+        .transcript-output {
+            background: var(--bg-secondary);
+            border: 2px solid var(--border-color);
+            padding: 2rem;
+            border-radius: 0;
+            margin-bottom: 2rem;
+            display: none;
+        }
+
+        .transcript-output.active {
+            display: block;
+            animation: slideInUp 0.4s ease;
+        }
+
+        .transcript-output h3 {
+            margin-bottom: 1rem;
+            color: var(--accent-primary);
+            text-transform: uppercase;
+            font-size: 0.9rem;
+            letter-spacing: 1px;
+        }
+
+        .transcript-text {
+            line-height: 1.8;
+            color: var(--text-primary);
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            font-size: 0.95rem;
+            font-family: 'Courier New', monospace;
+        }
+
+        .transcript-actions {
+            display: flex;
+            gap: 1rem;
+            margin-top: 1.5rem;
+            flex-wrap: wrap;
+        }
+
+        .action-btn {
+            padding: 0.8rem 1.5rem;
+            background: transparent;
+            border: 2px solid var(--accent-primary);
+            color: var(--accent-primary);
+            cursor: pointer;
+            text-transform: uppercase;
+            font-size: 0.85rem;
+            font-family: 'Courier New', monospace;
+            transition: all 0.3s;
+        }
+
+        .action-btn:hover {
+            background: var(--accent-primary);
+            color: var(--bg-dark);
+        }
+
+        /* Features Section */
+        .features {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 4rem 0;
+        }
+
+        .features-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 2rem;
+            margin-top: 2rem;
+        }
+
+        .feature-card {
+            border: 2px solid var(--border-color);
+            padding: 2rem;
+            transition: all 0.3s;
+            background: var(--bg-secondary);
+        }
+
+        .feature-card:hover {
+            border-color: var(--accent-primary);
+            box-shadow: 0 0 20px rgba(0, 255, 0, 0.1);
+        }
+
+        .feature-card h3 {
+            color: var(--accent-primary);
+            margin-bottom: 1rem;
+            text-transform: uppercase;
+        }
+
+        .feature-card p {
+            color: var(--text-secondary);
+            line-height: 1.6;
+        }
+
+        /* Footer */
+        .footer {
+            border-top: 1px solid var(--border-color);
+            padding: 3rem 2rem;
+            margin-top: 4rem;
+            text-align: center;
+            background: var(--bg-secondary);
+        }
+
+        .footer p {
+            margin-bottom: 1rem;
+        }
+
+        /* Animations */
+        @keyframes fadeInUp {
+            from {
+                opacity: 0;
+                transform: translateY(20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        @keyframes slideInDown {
+            from {
+                opacity: 0;
+                transform: translateY(-20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        @keyframes slideInUp {
+            from {
+                opacity: 0;
+                transform: translateY(20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        /* Responsive */
+        @media (max-width: 768px) {
+            h1 {
+                font-size: 2.5rem;
+            }
+
+            h2 {
+                font-size: 1.5rem;
+            }
+
+            .nav-links {
+                gap: 1rem;
+                font-size: 0.9rem;
+            }
+
+            .input-group {
+                flex-direction: column;
+            }
+
+            .input-group input {
+                min-width: 100%;
+            }
+
+            .features-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .hero-content {
+                text-align: center;
+            }
+        }
+    </style>
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <!-- Navigation -->
+    <nav class="nav">
+        <div class="nav-content">
+            <div class="logo">► ClipScript</div>
+            <ul class="nav-links">
+                <li><a href="#home" onclick="showHero()">Home</a></li>
+                <li><a href="#app" onclick="showApp()">Transcriber</a></li>
+                <li><a href="#pricing" onclick="alert('Pricing coming soon')">Pricing</a></li>
+            </ul>
+        </div>
+    </nav>
+
+    <!-- Hero Section -->
+    <section class="hero hero-view active" id="home">
+        <div class="container">
+            <div class="hero-content">
+                <h1>Turn <span class="highlight">TikTok</span> into <span class="highlight">Text</span></h1>
+                <p>Extract transcripts from any TikTok video in seconds. Perfect for creators, researchers, and anyone who needs accurate text from video content.</p>
+                <button class="cta-button" onclick="showApp()">Start Transcribing →</button>
+                <p style="margin-top: 2rem; font-size: 0.9rem;">
+                    <span style="color: var(--accent-primary);">→</span> Paste a link. Get text instantly.
+                </p>
+            </div>
+        </div>
+    </section>
+
+    <!-- App Section -->
+    <section class="app-view" id="app">
+        <div class="transcriber-container">
+            <div class="transcriber-title">
+                <h2>Transcriber</h2>
+                <p>Paste any TikTok link below and we'll convert the audio to text</p>
+            </div>
+
+            <!-- Input -->
+            <div class="input-group">
+                <input 
+                    type="text" 
+                    id="tiktok-link" 
+                    placeholder="https://www.tiktok.com/@username/video/..."
+                    onkeypress="if(event.key==='Enter') transcribe()"
+                >
+                <button class="submit-btn" id="submit-btn" onclick="transcribe()">Transcribe</button>
+            </div>
+
+            <!-- Status -->
+            <div class="status" id="status">
+                <h3><span class="spinner"></span><span id="status-text">Processing...</span></h3>
+                <p id="status-detail"></p>
+            </div>
+
+            <!-- Output -->
+            <div class="transcript-output" id="output">
+                <h3>Transcript</h3>
+                <div class="transcript-text" id="transcript-text"></div>
+                <div class="transcript-actions">
+                    <button class="action-btn" onclick="copyTranscript()">Copy</button>
+                    <button class="action-btn" onclick="downloadTranscript()">Download</button>
+                    <button class="action-btn" onclick="resetApp()">Clear</button>
+                </div>
+            </div>
+
+            <!-- Features -->
+            <div class="features">
+                <h2>Why ClipScript?</h2>
+                <div class="features-grid">
+                    <div class="feature-card">
+                        <h3>⚡ Lightning Fast</h3>
+                        <p>Get transcripts in 5–30 seconds. No waiting around, no complexity.</p>
+                    </div>
+                    <div class="feature-card">
+                        <h3>🎯 Accurate</h3>
+                        <p>AI-powered transcription catches what you might miss by ear.</p>
+                    </div>
+                    <div class="feature-card">
+                        <h3>🔒 Private</h3>
+                        <p>Your videos and transcripts aren't stored. One-time processing only.</p>
+                    </div>
+                    <div class="feature-card">
+                        <h3>📋 Copy & Share</h3>
+                        <p>Transcripts in plain text. Copy, download, use anywhere.</p>
+                    </div>
+                    <div class="feature-card">
+                        <h3>🔗 Simple</h3>
+                        <p>Just paste a link. No accounts, no uploads, no friction.</p>
+                    </div>
+                    <div class="feature-card">
+                        <h3>💰 Affordable</h3>
+                        <p>Pay only for what you transcribe. No subscriptions, no surprises.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="footer">
+        <p><strong>ClipScript AI</strong> — Made by builders, for builders.</p>
+        <p style="font-size: 0.9rem;">© 2024. No rights reserved. Do what you want.</p>
+    </footer>
+
+    <script>
+        // State
+        let currentTranscript = null;
+
+        // Show/Hide Views
+        function showHero() {
+            document.querySelector('.hero-view').classList.add('active');
+            document.querySelector('.app-view').classList.remove('active');
+            window.scrollTo(0, 0);
+        }
+
+        function showApp() {
+            document.querySelector('.hero-view').classList.remove('active');
+            document.querySelector('.app-view').classList.add('active');
+            document.getElementById('tiktok-link').focus();
+            window.scrollTo(0, 0);
+        }
+
+        // Main transcribe function
+        async function transcribe() {
+            const link = document.getElementById('tiktok-link').value.trim();
+            const status = document.getElementById('status');
+            const output = document.getElementById('output');
+            const submitBtn = document.getElementById('submit-btn');
+
+            // Validate
+            if (!link) {
+                showStatus('error', 'No Link', 'Paste a TikTok link first');
+                return;
+            }
+
+            if (!link.includes('tiktok.com')) {
+                showStatus('error', 'Invalid Link', 'That doesn\'t look like a TikTok URL');
+                return;
+            }
+
+            // Show loading
+            showStatus('processing', 'Processing', 'Downloading video...');
+            output.classList.remove('active');
+            submitBtn.disabled = true;
+
+            try {
+                // Call unified backend API
+                const response = await fetch('/api/transcribe', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ link })
+                });
+
+                const data = await response.json();
+
+                if (!response.ok) {
+                    throw new Error(data.error || 'Transcription failed. Try again.');
+                }
+
+                if (!data.success || !data.transcript) {
+                    throw new Error('No transcript received. Try a different video.');
+                }
+
+                currentTranscript = data.transcript;
+
+                // Show success
+                document.getElementById('transcript-text').textContent = currentTranscript;
+                output.classList.add('active');
+                showStatus('success', 'Success', `Transcript ready (${data.length} characters)`);
+
+            } catch (error) {
+                console.error('Transcription error:', error);
+                showStatus('error', 'Error', error.message || 'Unknown error. Try again.');
+            } finally {
+                submitBtn.disabled = false;
+            }
+        }
+
+        // Show status message
+        function showStatus(type, title, detail) {
+            const status = document.getElementById('status');
+            const statusText = document.getElementById('status-text');
+            const statusDetail = document.getElementById('status-detail');
+
+            status.className = `status active ${type}`;
+            statusText.textContent = title;
+            statusDetail.textContent = detail;
+
+            if (type === 'success' || type === 'error') {
+                setTimeout(() => {
+                    if (type === 'error') {
+                        status.classList.remove('active');
+                    }
+                }, 5000);
+            }
+        }
+
+        // Copy transcript
+        function copyTranscript() {
+            if (!currentTranscript) return;
+            navigator.clipboard.writeText(currentTranscript);
+            alert('Copied to clipboard!');
+        }
+
+        // Download transcript
+        function downloadTranscript() {
+            if (!currentTranscript) return;
+            const element = document.createElement('a');
+            element.setAttribute('href', 'data:text/plain;charset=utf-8,' + encodeURIComponent(currentTranscript));
+            element.setAttribute('download', 'transcript.txt');
+            element.style.display = 'none';
+            document.body.appendChild(element);
+            element.click();
+            document.body.removeChild(element);
+        }
+
+        // Reset app
+        function resetApp() {
+            document.getElementById('tiktok-link').value = '';
+            document.getElementById('status').classList.remove('active');
+            document.getElementById('output').classList.remove('active');
+            currentTranscript = null;
+            document.getElementById('tiktok-link').focus();
+        }
+    </script>
+</body>
+</html>

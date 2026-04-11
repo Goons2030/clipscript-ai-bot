@@ -1,0 +1,11 @@
+{
+  "python.terminal.useEnvFile": true,
+  "python.linting.enabled": true,
+  "python.defaultInterpreterPath": "C:/Users/Big Dan/AppData/Local/Programs/Python/Python313/python.exe",
+  "python.analysis.extraPaths": [
+    "C:/Users/Big Dan/AppData/Local/Programs/Python/Python313/lib/site-packages"
+  ],
+  "[python]": {
+    "editor.defaultFormatter": "ms-python.python"
+  }
+}
