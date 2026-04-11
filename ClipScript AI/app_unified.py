@@ -513,9 +513,22 @@ telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_
 def index():
     """Serve the web UI (index.html from web folder)."""
     try:
-        # Serve from the web folder
-        web_folder = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'ClipScript AI web')
-        return send_from_directory(web_folder, 'index.html')
+        # Support both repo-root execution and subdirectory (Railway root-dir) execution
+        current_dir = os.path.dirname(__file__)
+        repo_root = os.path.dirname(current_dir)
+        candidate_folders = [
+            os.path.join(repo_root, 'ClipScript AI web'),   # normal repo layout
+            os.path.join(current_dir, 'web'),               # optional co-located web folder
+            os.path.join(current_dir, '..', 'ClipScript AI web'),
+        ]
+
+        for folder in candidate_folders:
+            folder = os.path.abspath(folder)
+            index_path = os.path.join(folder, 'index.html')
+            if os.path.exists(index_path):
+                return send_from_directory(folder, 'index.html')
+
+        return jsonify({"status": "Web UI not found"}), 404
     except:
         return jsonify({"status": "Web UI not found"}), 404
 
@@ -667,20 +680,22 @@ if __name__ == '__main__':
         if os.getenv("RENDER_EXTERNAL_URL") else None
     )
     
+    port = int(os.getenv("PORT", 5000))
+
     if webhook_url:
         # Production mode: Use webhook
         logger.info("PRODUCTION MODE - Using Telegram webhook")
         setup_telegram_webhook()
         logger.info("Unified backend ready for Telegram (webhook) + Web API requests")
         logger.info("="*70)
-        app.run(host='0.0.0.0', port=5000, debug=False)
+        app.run(host='0.0.0.0', port=port, debug=False)
     else:
         # Development mode: Use polling
         logger.info("DEVELOPMENT MODE - Using Telegram polling")
         
         # Start Flask in a background thread
         flask_thread = threading.Thread(
-            target=lambda: app.run(host='0.0.0.0', port=5000, debug=False),
+            target=lambda: app.run(host='0.0.0.0', port=port, debug=False),
             daemon=True
         )
         flask_thread.start()
