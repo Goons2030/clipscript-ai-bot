@@ -86,15 +86,15 @@ FFMPEG_PATH=/path/to/ffmpeg  # Optional: only if not in PATH
 ### 4. Run
 
 ```bash
-python main.py
+python app_unified.py
 ```
 
 Expected output:
 ```
 ======================================================================
-Starting ClipScript AI bot...
-Bot initialized and handlers registered
-Starting polling...
+Starting ClipScript AI - Unified Backend
+Transcription Service: deepgram
+Flask server started in background
 ======================================================================
 Application started
 ```
@@ -117,7 +117,7 @@ Bot responds with transcript in seconds.
 
 ```bash
 # Keep running
-python main.py
+python app_unified.py
 
 # To stop: Ctrl+C or
 taskkill /F /IM python.exe

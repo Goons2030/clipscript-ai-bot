@@ -1,0 +1,1 @@
+-r "ClipScript AI/requirements.txt"

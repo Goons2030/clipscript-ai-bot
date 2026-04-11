@@ -1,5 +1,5 @@
 services:
-  - type: worker
+  - type: web
     name: clipscript-ai-bot
     env: python
     
@@ -9,8 +9,8 @@ services:
       apt-get install -y ffmpeg &&
       pip install -r requirements.txt
     
-    # Start the bot
-    startCommand: python main.py
+    # Start unified backend (Telegram + Web API + Web UI)
+    startCommand: python app_unified.py
     
     # Python version (3.13 recommended, 3.11+ supported)
     runtime: python-3.13
