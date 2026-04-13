@@ -7,8 +7,12 @@ import sqlite3
 import logging
 from datetime import datetime
 from contextlib import contextmanager
+from threading import Lock
 
 logger = logging.getLogger(__name__)
+
+# Thread-safe lock for atomic DB operations
+_db_lock = Lock()
 
 DB_PATH = "jobs.db"
 
@@ -65,18 +69,35 @@ def init_db():
 
 
 def create_job(request_id: str, user_id: str, link: str) -> int:
-    """Create a new job. Returns job_id."""
+    """Create a new job atomically. Returns job_id. Thread-safe."""
     try:
-        with get_db() as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-                INSERT INTO jobs (request_id, user_id, link, status)
-                VALUES (?, ?, ?, ?)
-            ''', (request_id, user_id, link, 'pending'))
-            
-            job_id = cursor.lastrowid
-            logger.info(f"[{request_id}] Created job #{job_id} for user {user_id}")
-            return job_id
+        # Use lock to prevent race conditions during job creation
+        with _db_lock:
+            with get_db() as conn:
+                cursor = conn.cursor()
+                
+                # Check if job already exists (prevent duplicate creation)
+                cursor.execute('''
+                    SELECT id FROM jobs WHERE request_id = ?
+                ''', (request_id,))
+                
+                if cursor.fetchone():
+                    logger.warning(f"[{request_id}] Job already exists, returning existing job")
+                    # Get the existing job ID
+                    cursor.execute('''
+                        SELECT id FROM jobs WHERE request_id = ?
+                    ''', (request_id,))
+                    return cursor.fetchone()[0]
+                
+                # Insert new job atomically
+                cursor.execute('''
+                    INSERT INTO jobs (request_id, user_id, link, status)
+                    VALUES (?, ?, ?, ?)
+                ''', (request_id, user_id, link, 'pending'))
+                
+                job_id = cursor.lastrowid
+                logger.info(f"[{request_id}] Created job #{job_id} for user {user_id}")
+                return job_id
     except Exception as e:
         logger.error(f"Failed to create job: {e}")
         return None
@@ -216,6 +237,32 @@ def get_job_by_request_id(request_id: str) -> dict:
         return None
 
 
+def get_job_by_link(link: str) -> dict:
+    """Get a completed job by link (for job reuse/caching). Returns job dict or None."""
+    try:
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT id, request_id, user_id, link, status, result, error, created_at, updated_at
+                FROM jobs
+                WHERE link = ?
+                AND status = ?
+                ORDER BY created_at DESC
+                LIMIT 1
+            ''', (link, 'completed'))
+            
+            row = cursor.fetchone()
+            if row:
+                logger.info(f"Cache hit: Found completed job for link {link[:50]}")
+                return dict(row)
+            else:
+                logger.debug(f"Cache miss: No completed job for link {link[:50]}")
+                return None
+    except Exception as e:
+        logger.error(f"Failed to get job by link: {e}")
+        return None
+
+
 def shorten_url(url: str, max_length: int = 40) -> str:
     """Shorten URL for display. Example: 'https://www.tiktok.com/@xxx/video/123...'."""
     if len(url) <= max_length:
@@ -239,3 +286,93 @@ def get_status_emoji(status: str) -> str:
         'failed': '❌'
     }
     return emojis.get(status, '❓')
+
+
+def get_queue_position(request_id: str) -> int:
+    """
+    Get queue position for a job.
+    Counts all pending jobs created BEFORE this job.
+    Returns position (1-indexed, so position 1 means next to be processed).
+    """
+    try:
+        with get_db() as conn:
+            cursor = conn.cursor()
+            
+            # Get the created_at timestamp for THIS job
+            cursor.execute('''
+                SELECT created_at FROM jobs WHERE request_id = ?
+            ''', (request_id,))
+            
+            row = cursor.fetchone()
+            if not row:
+                logger.warning(f"[{request_id}] Job not found for queue position")
+                return None
+            
+            created_at = row[0]
+            
+            # Count all PENDING jobs created BEFORE this one
+            cursor.execute('''
+                SELECT COUNT(*) FROM jobs
+                WHERE status = ?
+                AND created_at < ?
+            ''', ('pending', created_at))
+            
+            count = cursor.fetchone()[0]
+            position = count + 1  # 1-indexed
+            
+            logger.debug(f"[{request_id}] Queue position: {position} ({count} jobs ahead)")
+            return position
+            
+    except Exception as e:
+        logger.error(f"Failed to get queue position: {e}")
+        return None
+
+
+def get_pending_count() -> int:
+    """Get number of jobs in pending status. Used for queue display."""
+    try:
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT COUNT(*) FROM jobs WHERE status = ?', ('pending',))
+            count = cursor.fetchone()[0]
+            return count
+    except Exception as e:
+        logger.error(f"Failed to get pending count: {e}")
+        return 0
+
+
+def get_avg_processing_time() -> float:
+    """
+    Get average processing time for completed jobs.
+    Returns seconds, used for estimated wait time calculation.
+    """
+    try:
+        with get_db() as conn:
+            cursor = conn.cursor()
+            
+            # Calculate average time between created_at and updated_at for completed jobs
+            cursor.execute('''
+                SELECT AVG(
+                    (julianday(updated_at) - julianday(created_at)) * 86400
+                )
+                FROM jobs
+                WHERE status = ?
+                LIMIT 100
+            ''', ('completed',))
+            
+            result = cursor.fetchone()[0]
+            
+            # Return average in seconds, minimum 5 seconds, maximum 30 seconds
+            if result is None:
+                return 10.0  # Default 10 seconds if no completed jobs
+            
+            avg_time = float(result)
+            # Clamp between 5-30 seconds for reasonable estimates
+            clamped = max(5.0, min(30.0, avg_time))
+            
+            logger.debug(f"Average processing time: {clamped:.1f}s from {100} recent jobs")
+            return clamped
+            
+    except Exception as e:
+        logger.error(f"Failed to get average processing time: {e}")
+        return 10.0  # Safe default

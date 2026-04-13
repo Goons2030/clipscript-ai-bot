@@ -1,14 +1,746 @@
-(.venv) PS C:\Users\Big Dan\Desktop\ClipScript AI bot> python app_unified.py
-C:\Users\Big Dan\Desktop\ClipScript AI bot\.venv/Scripts\python.exe: can't open file 'C:\\Users\\Big Dan\\Desktop\\ClipScript AI bot\\app_unified.py': [Errno 2] No such file or directory
-(.venv) PS C:\Users\Big Dan\Desktop\ClipScript AI bot> cd ClipScript Ai
-Set-Location : A positional parameter cannot be found that accepts argument 
-'Ai'.
-At line:1 char:1
-+ cd ClipScript Ai
-+ ~~~~~~~~~~~~~~~~
-    + CategoryInfo          : InvalidArgument: (:) [Set-Location], ParameterBi 
-   ndingException
-    + FullyQualifiedErrorId : PositionalParameterNotFound,Microsoft.PowerShell 
-   .Commands.SetLocationCommand
- 
-(.venv) PS C:\Users\Big Dan\Desktop\ClipScript AI bot> 
+Perfect — this is the exact moment to **lock V1, fix core weaknesses, and define V2 properly**. I’ll give you everything structured and actionable.
+
+---
+
+# 🧠 1. MASTER PROMPT (SMART LINKS + JOB REUSE)
+
+Paste this into Copilot 👇
+
+```
+PROJECT CONTEXT:
+ClipScript AI is a Telegram bot + Flask API that:
+- Accepts video links
+- Downloads using yt-dlp
+- Extracts audio using FFmpeg
+- Transcribes audio
+- Uses SQLite (jobs.db) for job tracking
+- Has a stable processing pipeline
+
+IMPORTANT:
+DO NOT rewrite the architecture.
+DO NOT break existing working logic.
+ONLY extend functionality.
+
+---
+
+TASK:
+Add:
+1. Smart link extraction (handle messy user input)
+2. URL normalization (short links → full links)
+3. Job reuse (avoid reprocessing same link)
+
+---
+
+PART 1: SMART LINK EXTRACTION
+
+Users may send messages like:
+"Check this video https://vm.tiktok.com/... more text..."
+
+Create function:
+extract_valid_url(text)
+
+Requirements:
+- Extract ALL URLs using regex
+- Filter only supported domains:
+  tiktok.com
+  vm.tiktok.com
+  youtube.com
+  youtu.be
+  instagram.com
+  twitter.com
+  x.com
+- Return FIRST valid video URL
+- If none found → return None
+
+---
+
+PART 2: URL NORMALIZATION
+
+Create function:
+normalize_url(url)
+
+Handle:
+- vm.tiktok.com → resolve to full URL (use yt-dlp or HTTP redirect)
+- youtu.be → convert to youtube.com/watch?v=...
+- Remove tracking parameters (?is_from_webapp etc.)
+
+---
+
+PART 3: JOB REUSE (VERY IMPORTANT)
+
+Before processing:
+
+1. Check DB:
+   SELECT * FROM jobs WHERE link = ? AND status = "completed"
+
+2. If found:
+   - Return stored result immediately
+   - DO NOT reprocess
+   - Send message:
+     "⚡ Already processed. Returning saved result."
+
+3. If not found:
+   - Continue normal flow
+
+---
+
+PART 4: INTEGRATION
+
+Modify ONLY:
+- handle_message()
+- /api/transcribe
+
+Flow:
+1. Receive message
+2. extract_valid_url()
+3. normalize_url()
+4. Check DB (job reuse)
+5. If not found → create_job()
+6. Process pipeline
+7. Save result/error
+
+---
+
+PART 5: SAFETY
+
+- Wrap all new logic in try/except
+- Log:
+  - extracted URL
+  - normalized URL
+  - reuse hit
+
+---
+
+GOAL:
+Make the system:
+- Robust to messy input
+- Faster via job reuse
+- Ready for real-world users
+```
+
+---
+
+# 🚧 2. BOTTLENECKS + SOLUTIONS (CLEAR FIXES)
+
+## ❗ 1. YouTube Not Working
+
+### Cause:
+
+* yt-dlp may need:
+
+  * updated version
+  * correct format selection
+  * cookies for some videos
+
+### ✅ Fix:
+
+Run:
+
+```
+pip install -U yt-dlp
+```
+
+And ensure download uses:
+
+```python
+'format': 'bestaudio/best'
+```
+
+---
+
+## ❗ 2. Single Processing (Slow)
+
+### Current:
+
+```
+Semaphore(1)
+```
+
+### ✅ Fix:
+
+```
+Semaphore(2)
+```
+
+👉 Only after testing stability
+
+---
+
+## ❗ 3. Duplicate Processing
+
+### Problem:
+
+Same link processed again
+
+### ✅ Fix:
+
+✔ Job reuse (already in prompt above)
+
+---
+
+## ❗ 4. Messy Input (Mobile links)
+
+### Problem:
+
+Users send:
+
+* text + link
+* multiple links
+* short links
+
+### ✅ Fix:
+
+✔ extract_valid_url()
+✔ normalize_url()
+
+---
+
+## ❗ 5. Blocking API
+
+### Problem:
+
+Web waits for full result
+
+### ✅ Simple Fix (V1.5):
+
+* Show “Processing…” in UI
+* Keep backend same
+
+---
+
+## ❗ 6. DB Growth
+
+### Problem:
+
+DB grows forever
+
+### ✅ Fix (later):
+
+* Delete old jobs (e.g. > 7 days)
+* OR limit per user
+
+---
+
+# 🚀 3. CLIPSCRIPT AI V1 (WHAT YOU HAVE NOW)
+
+## 🎯 Definition:
+
+> **Stable transcription system with multi-interface access**
+
+---
+
+## ✅ V1 FEATURES
+
+### Core
+
+* TikTok transcription ✅
+* YouTube (partial) ⚠️
+* Audio extraction (FFmpeg) ✅
+* Transcription (Whisper/Deepgram) ✅
+
+---
+
+### Stability
+
+* Error handling ✅
+* Timeout protection ✅
+* No crashes ✅
+* Logging system ✅
+
+---
+
+### System
+
+* SQLite database ✅
+* Job tracking ✅
+* Request IDs ✅
+
+---
+
+### Telegram Dashboard
+
+* `/start` ✅
+* `/status` ✅
+* `/history` ✅
+* `/help` ✅
+
+---
+
+### Interfaces
+
+* Telegram bot ✅
+* Web UI ✅
+* API endpoint ✅
+
+---
+
+## 🟢 V1 STATUS:
+
+> **Ready for cloud deployment**
+
+---
+
+# ☁️ 4. BEFORE YOU DEPLOY V1
+
+Do this checklist:
+
+### ✅ MUST HAVE
+
+* Test 5–10 links in a row
+* Test bad link
+* Test restart → DB still works
+* Fix YouTube issue
+
+---
+
+### ⚠️ OPTIONAL (but recommended)
+
+* Add job reuse
+* Add smart link extraction
+
+---
+
+# 🚀 5. CLIPSCRIPT AI V2 (UPGRADE PATH)
+
+## 🔥 V2 GOAL:
+
+> Turn it into a **content tool, not just transcription**
+
+---
+
+## 🧩 V2 FEATURES
+
+### 1. Output Upgrade
+
+* 📝 Summary
+* 📄 Formatted transcript
+* ⏱ Timestamps
+
+---
+
+### 2. Clip Generation (BIG ONE)
+
+* Auto cut 15–60 sec clips
+* Based on:
+
+  * silence
+  * keywords
+
+---
+
+### 3. Multi-Platform Full Support
+
+* YouTube (fully stable)
+* Instagram
+* X
+
+---
+
+### 4. Retry System
+
+```
+/retry <id>
+```
+
+---
+
+### 5. Performance Upgrade
+
+* Semaphore(2–3)
+* Faster processing
+
+---
+
+### 6. Web UX Upgrade
+
+* Loading states
+* Progress indicator
+
+---
+
+### 7. Basic Monetization
+
+* Free tier (limited requests)
+* Paid tier (more usage)
+
+---
+
+# 🧠 FINAL STRATEGY
+
+## RIGHT NOW:
+
+👉 Lock V1:
+
+* stable
+* deployable
+* usable
+
+---
+
+## NEXT:
+
+👉 Add:
+
+1. Smart links
+2. Job reuse
+
+---
+
+## THEN:
+
+👉 Move to V2:
+
+* clips
+* summaries
+* scaling
+
+---
+
+# 🎯 REAL TALK
+
+You’re no longer “trying things”.
+
+You now have:
+
+> A deployable AI product
+
+---
+
+If you want next, I’ll:
+
+* give you **Render deployment config (exact steps)**
+* or help you **fix YouTube properly inside your code**
+
+(Alright — I’ve gone through everything you built again, this time like a **system audit**, not just a review. I’m going to be direct and structured so you see both strength and hidden gaps.
+
+---
+
+# 🧠 SYSTEM RESCAN — CLIPSCRIPT AI
+
+## 🏗️ 1. ARCHITECTURE STATUS
+
+You now have a **3-layer system**:
+
+```
+INPUT LAYER
+- Telegram Bot
+- Web UI (Flask)
+- API (/api/transcribe)
+
+CORE LAYER
+- Processing pipeline (yt-dlp → FFmpeg → Transcription)
+- Request control (Semaphore)
+
+DATA LAYER
+- SQLite (jobs.db)
+- db.py abstraction
+```
+
+👉 This is a **proper service architecture** — not a script anymore.
+
+---
+
+# 📊 2. COMPONENT-BY-COMPONENT ANALYSIS
+
+## 🔹 A. Input Layer
+
+### ✅ Strengths
+
+* Multi-entry (Telegram + Web + API)
+* Works reliably
+* Simple UX
+
+### ⚠️ Weakness
+
+* Input is still **not fully normalized**
+* Messy links can break flow
+
+👉 This is your **biggest real-world risk right now**
+
+---
+
+## 🔹 B. Processing Pipeline
+
+### ✅ Strengths
+
+* Stable (no crashes)
+* Timeout protected
+* Error-isolated
+* Sequential control (safe)
+
+### ⚠️ Weakness
+
+* Single-threaded → slow under load
+* No prioritization (all requests equal)
+
+---
+
+## 🔹 C. Database Layer
+
+### ✅ Strengths
+
+* Clean separation (`db.py`)
+* Full lifecycle tracking
+* Indexed fields
+* Safe operations (try/except)
+
+### ⚠️ Weakness
+
+* No cleanup strategy (DB will grow forever)
+* No retry logic yet (even though structure supports it)
+
+---
+
+## 🔹 D. Telegram Dashboard
+
+### ✅ Strengths
+
+* Functional and clean
+* Uses real data (good integration)
+* Lightweight UX
+
+### ⚠️ Weakness
+
+* No interactivity (buttons, actions)
+* `/retry` not implemented (missed opportunity)
+
+---
+
+## 🔹 E. Web/API Layer
+
+### ✅ Strengths
+
+* Unified backend
+* API works
+* Web UI functional
+
+### ⚠️ Weakness
+
+* API is **blocking** (waits for full process)
+* No async/background job handling
+
+---
+
+# ⚠️ 3. HIDDEN BOTTLENECKS (IMPORTANT)
+
+These are not obvious, but they matter:
+
+---
+
+## ❗ Bottleneck 1: Processing Lock
+
+```
+Semaphore(1)
+```
+
+👉 Effect:
+
+* Safe ✅
+* But:
+
+  * 3 users = queue delay
+  * Feels slow
+
+---
+
+## ❗ Bottleneck 2: Synchronous API
+
+```
+POST /api/transcribe → waits for full result
+```
+
+👉 Problem:
+
+* Long videos = long wait
+* Web UI can feel frozen
+
+---
+
+## ❗ Bottleneck 3: No Job Reuse
+
+Even though you store jobs:
+
+👉 If same link sent twice:
+
+* It reprocesses again ❌
+
+---
+
+## ❗ Bottleneck 4: No Input Intelligence
+
+System assumes:
+
+* Clean links
+
+Reality:
+
+* Users send garbage text
+* Multiple links
+* Short links
+
+---
+
+# 🔥 4. SYSTEM MATURITY LEVEL
+
+You are now at:
+
+### ✅ Level 1 — Working Script → DONE
+
+### ✅ Level 2 — Stable System → DONE
+
+### ✅ Level 3 — Trackable System → DONE
+
+---
+
+### 🚧 Level 4 — Smart + Scalable System → NEXT
+
+That’s where you’re heading.
+
+---
+
+# 🚀 5. WHAT TO FIX NEXT (PRIORITY ORDER)
+
+## 🔥 PRIORITY 1 — INPUT NORMALIZATION (DO THIS FIRST)
+
+Fix:
+
+* Extract correct link from messy text
+* Normalize short links
+
+👉 This improves:
+
+* Reliability
+* User experience
+* Success rate
+
+---
+
+## 🔥 PRIORITY 2 — OUTPUT QUALITY
+
+Upgrade response:
+
+Instead of:
+
+```
+long raw text
+```
+
+Do:
+
+```
+📝 Summary
+📄 Full transcript (formatted)
+```
+
+👉 Makes product feel 10x better instantly
+
+---
+
+## 🔥 PRIORITY 3 — JOB REUSE (SMART MOVE)
+
+Before processing:
+
+```
+Check DB:
+If link already completed → return result instantly
+```
+
+👉 Benefits:
+
+* Faster responses
+* Saves compute
+* Feels “smart”
+
+---
+
+## 🔥 PRIORITY 4 — LIGHT CONCURRENCY
+
+Change:
+
+```
+Semaphore(1) → Semaphore(2)
+```
+
+👉 Only after testing stability
+
+---
+
+## 🔥 PRIORITY 5 — SIMPLE RETRY SYSTEM
+
+You already have DB structure.
+
+Add:
+
+```
+/retry <id>
+```
+
+👉 Easy win, high value
+
+---
+
+# 🧠 6. WHAT YOU SHOULD NOT DO YET
+
+Avoid:
+
+❌ Redis
+❌ Microservices
+❌ Complex queues
+❌ Heavy frontend frameworks
+
+👉 You’re not there yet.
+
+---
+
+# 💡 7. STRATEGIC INSIGHT
+
+Right now your system is:
+
+> **Reliable but not yet optimized**
+
+That’s actually perfect.
+
+---
+
+# 🎯 FINAL POSITIONING
+
+You’ve built:
+
+> A **multi-interface AI transcription engine with persistence**
+
+That’s:
+
+* technically solid
+* extensible
+* monetizable
+
+---
+
+# 🚀 NEXT DECISION
+
+Pick ONE path:
+
+## Option A — Product Upgrade
+
+* Better output
+* Clips
+* Summaries
+
+## Option B — System Upgrade
+
+* Concurrency
+* Job reuse
+* Smarter input
+
+---
+
+👉 Best move right now:
+**Combine both lightly (input + output improvements)**
+
+---
+
+If you want next, I’ll:
+
+* write the **exact prompt to add smart link handling + job reuse together**
+* or design **ClipScript AI v2 (feature upgrade path)**
+)
