@@ -1092,6 +1092,18 @@ def health():
     })
 
 
+@app.route('/test', methods=['GET'])
+def test():
+    """Simple test endpoint to verify API is responding with JSON."""
+    logger.info("[TEST] Health check called")
+    return jsonify({
+        'status': 'ok',
+        'message': 'API is working correctly',
+        'timestamp': time.time(),
+        'environment': 'production' if os.getenv('FLASK_ENV') == 'production' else 'development'
+    })
+
+
 @app.route('/telegram/webhook', methods=['POST'])
 def telegram_webhook():
     """Telegram webhook - receives messages from Telegram."""
@@ -1108,14 +1120,26 @@ def telegram_webhook():
         return jsonify({'error': str(e)}), 400
 
 
-@app.route('/api/transcribe', methods=['POST'])
+@app.route('/api/transcribe', methods=['POST', 'OPTIONS'])
 def api_transcribe():
     """Web API endpoint - now supports multiple links with job reuse."""
+    # Handle CORS preflight
+    if request.method == 'OPTIONS':
+        return jsonify({'status': 'ok'}), 200
+    
     user_id = request.remote_addr
     logger.info(f"[API] Request from {user_id}")
     
     try:
         data = request.get_json()
+        logger.debug(f"[API] Received data: {data}")
+        
+        if not data:
+            logger.warning("[API] No JSON data provided")
+            return jsonify({
+                'success': False,
+                'error': 'No JSON body provided'
+            }), 400
         
         # Support both single 'link' and multiple 'links' fields
         link_input = data.get('link', '').strip() if data else ''

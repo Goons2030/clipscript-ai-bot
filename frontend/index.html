@@ -618,6 +618,15 @@
     </footer>
 
     <script>
+        // API Configuration for local/production environments
+        const API_BASE = 
+            window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
+                ? 'http://127.0.0.1:5000'
+                : 'https://clipscript-ai-bot-production.up.railway.app';
+        
+        console.log('🚀 API BASE:', API_BASE);
+        console.log('🌐 Hostname:', window.location.hostname);
+        
         // State
         let currentTranscript = null;
 
@@ -659,21 +668,40 @@
             submitBtn.disabled = true;
 
             try {
-                // Call unified backend API
-                const response = await fetch('/api/transcribe', {
+                // Call unified backend API with correct URL
+                const apiUrl = `${API_BASE}/api/transcribe`;
+                console.log('📡 Calling:', apiUrl);
+                
+                const response = await fetch(apiUrl, {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: { 
+                        'Content-Type': 'application/json',
+                        'Accept': 'application/json'
+                    },
                     body: JSON.stringify({ link })
                 });
 
-                const data = await response.json();
+                // Get raw response text for debugging
+                const responseText = await response.text();
+                console.log('📦 Raw Response:', responseText.substring(0, 300));
+                
+                let data;
+                try {
+                    data = JSON.parse(responseText);
+                } catch (jsonError) {
+                    console.error('❌ JSON Parse Error:', jsonError);
+                    console.error('📄 Raw response was:', responseText);
+                    showStatus('error', 'API Error', `Backend returned invalid JSON. Check console logs.`);
+                    submitBtn.disabled = false;
+                    return;
+                }
 
                 if (!response.ok) {
-                    throw new Error(data.error || 'Transcription failed. Try again.');
+                    throw new Error(data.error || `Server error ${response.status}`);
                 }
 
                 if (!data.success || !data.transcript) {
-                    throw new Error('No transcript received. Try a different video.');
+                    throw new Error(data.error || 'No transcript received. Try a different video.');
                 }
 
                 currentTranscript = data.transcript;
@@ -684,7 +712,7 @@
                 showStatus('success', 'Success', `Transcript ready (${data.length} characters)`);
 
             } catch (error) {
-                console.error('Transcription error:', error);
+                console.error('❌ Transcription error:', error);
                 showStatus('error', 'Error', error.message || 'Unknown error. Try again.');
             } finally {
                 submitBtn.disabled = false;
