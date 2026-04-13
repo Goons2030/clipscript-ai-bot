@@ -252,103 +252,127 @@ def classify_download_error(error_output: str, error_type: str = "") -> str:
 
 def download_audio_with_fallback(url: str, temp_folder: str, request_id: str = "system") -> str:
     """
-    PRODUCTION RESILIENCE: 3-layer fallback system for audio extraction.
+    PRODUCTION RESILIENCE: Enhanced 3-layer fallback system for audio extraction.
     
-    LAYER 1 (PRIMARY): yt-dlp with FFmpeg post-processor (direct mp3)
-    LAYER 2 (RETRY): yt-dlp without post-processor (then FFmpeg separately)
-    LAYER 3 (GRACEFUL): Fail with classified error
+    LAYER 1 (PRIMARY): yt-dlp with FFmpeg post-processor + best format
+    LAYER 2 (RETRY): Mobile user-agent + alternative API hostname + worst format fallback
+    LAYER 3 (GRACEFUL): Simple download without post-processor + local FFmpeg
+    
+    Features:
+    - Cookie support (checks for cookies.txt)
+    - Per-layer user-agent rotation (desktop → mobile → generic)
+    - Improved TikTok extractor args with API hostname fallbacks
+    - Format fallback strategy (bestaudio/best → worstaudio/worst → best)
+    - Enhanced timeout and retry resilience
+    - Detailed error tracking for each layer
     
     Returns: path to audio.mp3 if successful
     Raises: Exception with classified error message if all layers fail
     """
-    user_agents = [
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-    ]
+    # ========================================
+    # SETUP: User agents and cookie file
+    # ========================================
+    user_agents = {
+        'layer1': "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+        'layer2': "Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148",
+        'layer3': "Mozilla/5.0 (Linux; Android 11; SM-G191B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Mobile Safari/537.36",
+    }
+    
+    # Check if cookies file exists
+    cookies_file = 'cookies.txt'
+    has_cookies = os.path.isfile(cookies_file)
+    if has_cookies:
+        logger.info(f"[{request_id}] 🍪 Using cookies file for authentication")
     
     audio_path = os.path.join(temp_folder, "audio.mp3")
-    video_path = os.path.join(temp_folder, "video.mp4")
+    last_error = ""
     
     # ========================================
     # LAYER 1: PRIMARY ATTEMPT
-    # Full yt-dlp with FFmpeg post-processor for direct mp3 extraction
+    # Full yt-dlp with FFmpeg post-processor, best format, desktop UA
     # ========================================
     try:
-        logger.info(f"[{request_id}] 🟢 LAYER 1: Primary audio extraction (yt-dlp + FFmpeg)")
+        logger.info(f"[{request_id}] 🟢 LAYER 1: Primary extraction (best format + FFmpeg post-processor)")
         
-        user_agent = user_agents[0]  # Use first UA for initial attempt
-        
-        # Use FFmpeg post-processor to extract audio directly as mp3
-        command = [
+        yt_dlp_args = [
             "yt-dlp",
-            "-f", "bestaudio/best",  # Prioritize audio-only formats
+            "-f", "bestaudio/best",  # Prioritize best audio quality
             "-o", os.path.join(temp_folder, "%(id)s.%(ext)s"),
             "--no-warnings",
             "--quiet",
-            "--extractor-args", "tiktok:api_hostname=api22-normal-c-hl.tiktokv.com",
-            "--user-agent", user_agent,
             "--socket-timeout", "30",
-            "--retries", "2",
-            "--fragment-retries", "2",
+            "--retries", "3",
+            "--fragment-retries", "3",
             "--sleep-requests", "1",
-            "--postprocessor-args", "-b:a 192k -ar 16000 -ac 1",
+            "--user-agent", user_agents['layer1'],
+            "--extractor-args", "tiktok:api_hostname=api16-normal-useast5.us.tiktokv.com",
             "-x",  # Extract audio
             "--audio-format", "mp3",
             "--audio-quality", "192",
+            "--postprocessor-args", "-b:a 192k -ar 16000 -ac 1",
             url
         ]
         
-        result = subprocess.run(command, capture_output=True, timeout=120, text=True)
+        # Add cookies if available
+        if has_cookies:
+            yt_dlp_args.insert(2, "--cookies")
+            yt_dlp_args.insert(3, cookies_file)
+        
+        result = subprocess.run(yt_dlp_args, capture_output=True, timeout=120, text=True)
+        last_error = result.stderr
         
         if result.returncode == 0:
-            # Find the extracted audio file
+            # Find and move the extracted mp3 file
             for file in os.listdir(temp_folder):
                 if file.endswith('.mp3') and file != 'audio.mp3':
                     extracted = os.path.join(temp_folder, file)
                     shutil.move(extracted, audio_path)
                     if os.path.exists(audio_path) and os.path.getsize(audio_path) > 1000:
-                        logger.info(f"[{request_id}] ✅ LAYER 1 SUCCESS: Audio extracted {os.path.getsize(audio_path)} bytes")
+                        file_size = os.path.getsize(audio_path)
+                        logger.info(f"[{request_id}] ✅ LAYER 1 SUCCESS ({file_size} bytes, desktop UA, cookies={has_cookies})")
                         return audio_path
             
-            logger.warning(f"[{request_id}] Layer 1 completed but no audio file found")
+            logger.warning(f"[{request_id}] Layer 1: Completed but no audio file produced")
         else:
-            error_output = result.stderr
-            logger.warning(f"[{request_id}] 🟡 LAYER 1 FAILED: {error_output[:80]}")
+            logger.warning(f"[{request_id}] 🟡 LAYER 1 FAILED: {result.stderr[:100]}")
     
     except subprocess.TimeoutExpired:
         logger.warning(f"[{request_id}] 🟡 LAYER 1 TIMEOUT: Exceeded 120 seconds")
     except Exception as e:
-        logger.warning(f"[{request_id}] 🟡 LAYER 1 EXCEPTION: {str(e)[:80]}")
+        logger.warning(f"[{request_id}] 🟡 LAYER 1 EXCEPTION: {str(e)[:100]}")
     
     # ========================================
-    # LAYER 2: FALLBACK ATTEMPT
-    # Simplified yt-dlp (no post-processor), then FFmpeg manually
+    # LAYER 2: FALLBACK WITH MOBILE UA
+    # Alternative API hostname + mobile user agent + format fallback
     # ========================================
     try:
-        logger.info(f"[{request_id}] 🟡 LAYER 2: Fallback with simplified extraction")
+        logger.info(f"[{request_id}] 🟡 LAYER 2: Fallback (mobile UA + alternative API + worstaudio format)")
         
-        user_agent = user_agents[1]  # Use different UA for retry
-        
-        # Download audio-only without post-processor
-        command = [
+        yt_dlp_args = [
             "yt-dlp",
-            "-f", "bestaudio",  # Audio-only, safer format
+            "-f", "worstaudio/worst",  # Fallback to worst quality but more compatible
             "-o", os.path.join(temp_folder, "%(id)s.%(ext)s"),
             "--no-warnings",
             "--quiet",
-            "--extractor-args", "tiktok:api_hostname=api22-normal-c-hl.tiktokv.com",
-            "--user-agent", user_agent,
             "--socket-timeout", "30",
-            "--retries", "1",
+            "--retries", "2",
+            "--fragment-retries", "2",
             "--sleep-requests", "2",
+            "--user-agent", user_agents['layer2'],
+            "--extractor-args", "tiktok:api_hostname=api22.tiktok.com",
             url
         ]
         
-        result = subprocess.run(command, capture_output=True, timeout=120, text=True)
+        # Add cookies if available
+        if has_cookies:
+            yt_dlp_args.insert(2, "--cookies")
+            yt_dlp_args.insert(3, cookies_file)
+        
+        result = subprocess.run(yt_dlp_args, capture_output=True, timeout=120, text=True)
+        last_error = result.stderr
         
         if result.returncode == 0:
-            # Find downloaded audio/video, convert with FFmpeg
+            # Find downloaded file and convert with FFmpeg
             downloaded_file = None
             for file in os.listdir(temp_folder):
                 if (file.endswith(('.m4a', '.aac', '.opus', '.webm', '.mp4', '.mkv')) and 
@@ -357,8 +381,7 @@ def download_audio_with_fallback(url: str, temp_folder: str, request_id: str = "
                     break
             
             if downloaded_file:
-                # Use FFmpeg to extract/convert to mp3
-                logger.info(f"[{request_id}] Converting downloaded file to mp3 via FFmpeg")
+                logger.info(f"[{request_id}] Converting with FFmpeg (Layer 2 download)")
                 ffmpeg_cmd = [
                     "ffmpeg",
                     "-i", downloaded_file,
@@ -375,29 +398,101 @@ def download_audio_with_fallback(url: str, temp_folder: str, request_id: str = "
                 
                 if ffmpeg_result.returncode == 0:
                     if os.path.exists(audio_path) and os.path.getsize(audio_path) > 1000:
-                        logger.info(f"[{request_id}] ✅ LAYER 2 SUCCESS: Audio converted {os.path.getsize(audio_path)} bytes")
+                        file_size = os.path.getsize(audio_path)
+                        logger.info(f"[{request_id}] ✅ LAYER 2 SUCCESS ({file_size} bytes, mobile UA + FFmpeg, cookies={has_cookies})")
                         return audio_path
                 else:
-                    logger.warning(f"[{request_id}] LAYER 2: FFmpeg conversion failed: {ffmpeg_result.stderr[:80]}")
+                    logger.warning(f"[{request_id}] Layer 2: FFmpeg conversion failed - {ffmpeg_result.stderr[:80]}")
             else:
-                logger.warning(f"[{request_id}] LAYER 2: Downloaded file not found")
+                logger.warning(f"[{request_id}] Layer 2: No downloadable file found")
         else:
-            error_output = result.stderr
-            logger.warning(f"[{request_id}] 🟡 LAYER 2 FAILED: {error_output[:80]}")
+            logger.warning(f"[{request_id}] 🟡 LAYER 2 FAILED: {result.stderr[:100]}")
     
     except subprocess.TimeoutExpired:
         logger.warning(f"[{request_id}] 🟡 LAYER 2 TIMEOUT: Exceeded time limit")
     except Exception as e:
-        logger.warning(f"[{request_id}] 🟡 LAYER 2 EXCEPTION: {str(e)[:80]}")
+        logger.warning(f"[{request_id}] 🟡 LAYER 2 EXCEPTION: {str(e)[:100]}")
     
     # ========================================
-    # LAYER 3: GRACEFUL FAILURE
-    # All attempts exhausted - classify error and fail gracefully
+    # LAYER 3: FINAL FALLBACK
+    # Simple download (no post-processor) + local FFmpeg, generic UA, best format
     # ========================================
-    logger.error(f"[{request_id}] ❌ ALL LAYERS FAILED: Could not extract audio")
+    try:
+        logger.info(f"[{request_id}] 🔴 LAYER 3: Final fallback (generic UA + best format)")
+        
+        yt_dlp_args = [
+            "yt-dlp",
+            "-f", "best",  # Just get the best available format
+            "-o", os.path.join(temp_folder, "%(id)s.%(ext)s"),
+            "--no-warnings",
+            "--quiet",
+            "--socket-timeout", "30",
+            "--retries", "1",
+            "--fragment-retries", "1",
+            "--sleep-requests", "3",
+            "--user-agent", user_agents['layer3'],
+            url
+        ]
+        
+        # Add cookies if available
+        if has_cookies:
+            yt_dlp_args.insert(2, "--cookies")
+            yt_dlp_args.insert(3, cookies_file)
+        
+        result = subprocess.run(yt_dlp_args, capture_output=True, timeout=120, text=True)
+        last_error = result.stderr
+        
+        if result.returncode == 0:
+            # Find any downloaded file
+            downloaded_file = None
+            for file in os.listdir(temp_folder):
+                if (file.endswith(('.m4a', '.aac', '.opus', '.webm', '.mp4', '.mkv', '.mov', '.m4v')) and 
+                    not file.startswith('video') and not file.startswith('audio')):
+                    downloaded_file = os.path.join(temp_folder, file)
+                    break
+            
+            if downloaded_file:
+                logger.info(f"[{request_id}] Converting with FFmpeg (Layer 3 download)")
+                ffmpeg_cmd = [
+                    "ffmpeg",
+                    "-i", downloaded_file,
+                    "-vn",
+                    "-acodec", "libmp3lame",
+                    "-ab", "192k",
+                    "-ar", "16000",
+                    "-ac", "1",
+                    "-y",
+                    audio_path
+                ]
+                
+                ffmpeg_result = subprocess.run(ffmpeg_cmd, capture_output=True, timeout=60, text=True)
+                
+                if ffmpeg_result.returncode == 0:
+                    if os.path.exists(audio_path) and os.path.getsize(audio_path) > 1000:
+                        file_size = os.path.getsize(audio_path)
+                        logger.info(f"[{request_id}] ✅ LAYER 3 SUCCESS ({file_size} bytes, generic UA + FFmpeg, cookies={has_cookies})")
+                        return audio_path
+                else:
+                    logger.warning(f"[{request_id}] Layer 3: FFmpeg conversion failed - {ffmpeg_result.stderr[:80]}")
+            else:
+                logger.warning(f"[{request_id}] Layer 3: No downloadable file found")
+        else:
+            logger.warning(f"[{request_id}] 🟡 LAYER 3 FAILED: {result.stderr[:100]}")
     
-    # Try to get error classification from last attempt
-    error_type = classify_download_error(result.stderr if 'result' in locals() else "")
+    except subprocess.TimeoutExpired:
+        logger.warning(f"[{request_id}] 🟡 LAYER 3 TIMEOUT: Exceeded time limit")
+    except Exception as e:
+        logger.warning(f"[{request_id}] 🟡 LAYER 3 EXCEPTION: {str(e)[:100]}")
+    
+    # ========================================
+    # ALL LAYERS FAILED - GRACEFUL ERROR
+    # Classify the error for the user
+    # ========================================
+    logger.error(f"[{request_id}] ❌ ALL LAYERS EXHAUSTED: Download failed after 3 attempts")
+    logger.debug(f"[{request_id}] Last error output: {last_error[:200]}")
+    
+    # Classify error using last attempt's stderr
+    error_type = classify_download_error(last_error)
     
     if error_type == 'private':
         msg = "⚠️ This video is private or unavailable. The creator may have hidden it."
@@ -412,8 +507,7 @@ def download_audio_with_fallback(url: str, temp_folder: str, request_id: str = "
     else:
         msg = "⚠️ Could not process this link. It may be private, restricted, or unsupported."
     
-    # Log the classified error for analytics
-    logger.info(f"[{request_id}] Classified error as: {error_type}")
+    logger.info(f"[{request_id}] Classified error: {error_type}")
     
     raise Exception(msg)
 
