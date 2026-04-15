@@ -1,0 +1,126 @@
+# ClipScript AI - Git Ignore File
+
+# Environment files (SECRETS!)
+.env
+.env.local
+.env.*.local
+.env.production
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environments
+.venv
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+database.db
+
+# Cache
+.cache/
+*.cache
+node_modules/
+.npm
+
+# Logs
+*.log
+logs/
+*.log.*
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Development
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Compiled files
+*.pyc
+*.pyo
+
+# Media files (large)
+videos/
+audio/
+downloads/
+temp_files/
+
+# Docker (optional if using local)
+docker-compose.override.yml
+
+# Config overrides
+secrets/
+local_config/
+
+# IDE
+.vscode/
+.idea/
+*.code-workspace
+
+# Environment
+# THIS IS CRITICAL - Never commit secrets!
+.env
+.env.development
+.env.production
+.env.local
+
+# Redis
+dump.rdb
+
+# PostgreSQL
+postgres_data/
+
+# Render/deployment configs
+render.yaml.local
+
+# AWS
+.aws/
+
+# Git
+.gitkeep

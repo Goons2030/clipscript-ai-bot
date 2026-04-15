@@ -45,13 +45,13 @@ file_handler = logging.FileHandler('logs/clipscript_unified.log')
 file_handler.setLevel(logging.INFO)
 file_handler.setFormatter(log_format)
 
-# Console handler with UTF-8 encoding and error handling for emojis
+# Console handler with safe encoding for Windows
 try:
-    # Try UTF-8 encoding for emoji support, replace errors to avoid crashes
-    console_handler = logging.StreamHandler(io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace'))
+    # Reconfigure stdout to replace problematic characters
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
 except:
-    # Fallback to default if utf-8 fails
-    console_handler = logging.StreamHandler()
+    pass
+console_handler = logging.StreamHandler(sys.stdout)
 console_handler.setLevel(logging.INFO)
 console_handler.setFormatter(log_format)
 
@@ -62,6 +62,56 @@ root_logger.addHandler(file_handler)
 root_logger.addHandler(console_handler)
 
 logger = logging.getLogger(__name__)
+
+def clean_ascii(text: str) -> str:
+    """
+    Remove non-ASCII characters that break Windows logging.
+    Replace Unicode symbols with ASCII equivalents.
+    """
+    if not text:
+        return text
+    
+    # Replace common Unicode symbols with ASCII equivalents
+    replacements = {
+        '→': '->',
+        '✓': 'OK',
+        '✗': 'ERROR',
+        '…': '...',
+        '•': '*',
+        '—': '-',
+        '–': '-',
+        ''': "'",
+        ''': "'",
+        '"': '"',
+        '"': '"',
+        '█': '#',
+        '▲': '^',
+        '▼': 'v',
+    }
+    
+    for symbol, replacement in replacements.items():
+        text = text.replace(symbol, replacement)
+    
+    # Remove any remaining non-ASCII characters
+    text = ''.join(char if ord(char) < 128 else '?' for char in text)
+    
+    return text
+
+
+def safe_log(level: str, message: str, *args, **kwargs):
+    """
+    Safe logging that handles unicode/emoji characters without crashing.
+    Cleans the message before logging.
+    """
+    try:
+        clean_msg = clean_ascii(message)
+        getattr(logger, level)(clean_msg, *args, **kwargs)
+    except Exception as e:
+        # Emergency fallback
+        try:
+            logger.info(f"[SAFE_LOG_ERROR] {str(e)[:50]}")
+        except:
+            pass
 
 # Initialize Flask app
 app = Flask(__name__)
@@ -88,6 +138,111 @@ request_semaphore = asyncio.Semaphore(2)
 _link_cache = {}
 _link_cache_lock = threading.Lock()
 CACHE_MAX_SIZE = 50  # Keep last 50 links in memory
+
+# ============================================
+# DUPLICATE PROCESSING PREVENTION
+# ============================================
+# Global set of links currently being processed
+# Prevents multiple simultaneous requests for the same link
+_processing_links = set()
+_processing_lock = threading.Lock()
+
+# ============================================
+# SMART JOB QUEUE SYSTEM
+# ============================================
+# Tracks all active jobs and their states
+# Maps normalized_link -> {
+#   'request_id': str,
+#   'status': 'processing'|'completed'|'failed',
+#   'result': str,
+#   'error': str,
+#   'created_at': timestamp,
+#   'completed_at': timestamp
+# }
+_job_queue = {}
+_job_queue_lock = threading.Lock()
+
+# Tracks users waiting for job results
+# Maps normalized_link -> [
+#   {'type': 'telegram', 'user_id': str, 'chat_id': str, 'update': Update},
+#   {'type': 'api', 'request_id': str}
+# ]
+_waiting_users = {}
+_waiting_users_lock = threading.Lock()
+
+
+def register_waiting_user(normalized_link: str, user_info: dict):
+    """Register a user waiting for job result."""
+    try:
+        with _waiting_users_lock:
+            if normalized_link not in _waiting_users:
+                _waiting_users[normalized_link] = []
+            _waiting_users[normalized_link].append(user_info)
+            logger.debug(f"User registered for {normalized_link[:40]}: {user_info['type']}")
+    except Exception as e:
+        logger.warning(f"Failed to register waiting user: {e}")
+
+
+def get_waiting_users(normalized_link: str) -> list:
+    """Get all users waiting for a job result."""
+    try:
+        with _waiting_users_lock:
+            return _waiting_users.get(normalized_link, []).copy()
+    except Exception as e:
+        logger.warning(f"Failed to get waiting users: {e}")
+        return []
+
+
+def clear_waiting_users(normalized_link: str):
+    """Clear waiting users after notifying them."""
+    try:
+        with _waiting_users_lock:
+            if normalized_link in _waiting_users:
+                del _waiting_users[normalized_link]
+                logger.debug(f"Cleared waiting users for {normalized_link[:40]}")
+    except Exception as e:
+        logger.warning(f"Failed to clear waiting users: {e}")
+
+
+def get_job_status(normalized_link: str) -> dict:
+    """Get current job status from queue."""
+    try:
+        with _job_queue_lock:
+            return _job_queue.get(normalized_link, {}).copy()
+    except Exception as e:
+        logger.warning(f"Failed to get job status: {e}")
+        return {}
+
+
+def create_job_entry(normalized_link: str, request_id: str):
+    """Create a new job entry in the queue."""
+    try:
+        with _job_queue_lock:
+            _job_queue[normalized_link] = {
+                'request_id': request_id,
+                'status': 'processing',
+                'result': None,
+                'error': None,
+                'created_at': time.time(),
+                'completed_at': None
+            }
+            logger.debug(f"Created job queue entry for {normalized_link[:40]}")
+    except Exception as e:
+        logger.warning(f"Failed to create job entry: {e}")
+
+
+def complete_job(normalized_link: str, result: str = None, error: str = None):
+    """Mark job as completed and notify waiting users."""
+    try:
+        with _job_queue_lock:
+            if normalized_link in _job_queue:
+                _job_queue[normalized_link]['status'] = 'completed' if result else 'failed'
+                _job_queue[normalized_link]['result'] = result
+                _job_queue[normalized_link]['error'] = error
+                _job_queue[normalized_link]['completed_at'] = time.time()
+                logger.info(f"Job completed: {normalized_link[:40]}, status: {'completed' if result else 'failed'}")
+    except Exception as e:
+        logger.warning(f"Failed to complete job: {e}")
 
 
 def cache_get(link: str) -> str:
@@ -250,266 +405,331 @@ def classify_download_error(error_output: str, error_type: str = "") -> str:
     return 'unknown'
 
 
-def download_audio_with_fallback(url: str, temp_folder: str, request_id: str = "system") -> str:
+def _has_ffmpeg() -> bool:
+    """Check if ffmpeg is available in system PATH."""
+    try:
+        result = subprocess.run(
+            ["ffmpeg", "-version"],
+            capture_output=True,
+            timeout=5,
+            text=True
+        )
+        return result.returncode == 0
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+
+
+def _convert_to_mp3(input_file: str, output_file: str) -> bool:
     """
-    PRODUCTION RESILIENCE: Enhanced 3-layer fallback system for audio extraction.
+    Convert audio file to MP3 using ffmpeg.
+    Returns True if successful, False if ffmpeg unavailable or conversion failed.
     
-    LAYER 1 (PRIMARY): yt-dlp with FFmpeg post-processor + best format
-    LAYER 2 (RETRY): Mobile user-agent + alternative API hostname + worst format fallback
-    LAYER 3 (GRACEFUL): Simple download without post-processor + local FFmpeg
-    
-    Features:
-    - Cookie support (checks for cookies.txt)
-    - Per-layer user-agent rotation (desktop → mobile → generic)
-    - Improved TikTok extractor args with API hostname fallbacks
-    - Format fallback strategy (bestaudio/best → worstaudio/worst → best)
-    - Enhanced timeout and retry resilience
-    - Detailed error tracking for each layer
-    
-    Returns: path to audio.mp3 if successful
-    Raises: Exception with classified error message if all layers fail
+    CRITICAL: Cleans up input file in finally block to prevent accumulation
+    of intermediate files that causes next request failure.
     """
-    # ========================================
-    # SETUP: User agents and cookie file
-    # ========================================
+    if not _has_ffmpeg():
+        logger.warning("FFmpeg not found - skipping post-processing")
+        return False
+    
+    try:
+        ffmpeg_cmd = [
+            "ffmpeg",
+            "-i", input_file,
+            "-vn",
+            "-acodec", "libmp3lame",
+            "-ab", "192k",
+            "-ar", "16000",
+            "-ac", "1",
+            "-y",
+            output_file
+        ]
+        
+        result = subprocess.run(
+            ffmpeg_cmd,
+            capture_output=True,
+            timeout=60,
+            text=True
+        )
+        
+        if result.returncode == 0:
+            return True
+        else:
+            logger.warning(f"FFmpeg conversion failed: {result.stderr[:100]}")
+            return False
+    except subprocess.TimeoutExpired:
+        logger.warning("FFmpeg conversion timeout")
+        return False
+    except Exception as e:
+        logger.warning(f"FFmpeg conversion error: {str(e)}")
+        return False
+    finally:
+        # CRITICAL: Clean up input file to prevent accumulation
+        # This ensures intermediate temp_layer files don't persist
+        # and cause "second request fails" issues
+        try:
+            if os.path.exists(input_file):
+                time.sleep(0.05)  # Windows file handle release
+                os.remove(input_file)
+                logger.debug(f"Cleanup: Removed intermediate file")
+        except:
+            pass
+
+
+def download_audio_with_fallback(url: str, output_path: str) -> bool:
+    """
+    Download audio with 3-layer fallback system.
+    
+    LAYER 1: yt-dlp + bestaudio/best format + desktop UA + FFmpeg if available
+    LAYER 2: yt-dlp + worstaudio/best format + mobile UA + no FFmpeg
+    LAYER 3: yt-dlp + best format + generic UA + minimal options
+    
+    Args:
+        url: Video URL to download
+        output_path: Full path where audio.mp3 should be written
+    
+    Returns:
+        True if successful, False if all layers fail
+    
+    CRITICAL: Proper cleanup and synchronization ensures next request
+    doesn't encounter file handle conflicts from previous yt-dlp processes.
+    """
+    # SAFETY: Ensure no concurrent processes from previous request
+    time.sleep(0.1)  # Windows file handle release delay
+    
+    # Remove existing output if present
+    if os.path.exists(output_path):
+        try:
+            os.remove(output_path)
+            time.sleep(0.05)  # Force file handle release
+        except:
+            pass
+    
+    # Setup temp folder for intermediate files (same folder as output)
+    temp_folder = os.path.dirname(output_path)
+    
+    # Check for cookies
+    cookies_file = 'cookies.txt'
+    has_cookies = os.path.isfile(cookies_file)
+    
+    # Check ffmpeg availability
+    has_ffmpeg = _has_ffmpeg()
+    
+    # User agents for different layers
     user_agents = {
         'layer1': "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
         'layer2': "Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148",
         'layer3': "Mozilla/5.0 (Linux; Android 11; SM-G191B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Mobile Safari/537.36",
     }
     
-    # Check if cookies file exists
-    cookies_file = 'cookies.txt'
-    has_cookies = os.path.isfile(cookies_file)
-    if has_cookies:
-        logger.info(f"[{request_id}] 🍪 Using cookies file for authentication")
-    
-    audio_path = os.path.join(temp_folder, "audio.mp3")
     last_error = ""
     
     # ========================================
-    # LAYER 1: PRIMARY ATTEMPT
-    # Full yt-dlp with FFmpeg post-processor, best format, desktop UA
+    # LAYER 1: PRIMARY (best format + desktop UA + FFmpeg)
     # ========================================
     try:
-        logger.info(f"[{request_id}] 🟢 LAYER 1: Primary extraction (best format + FFmpeg post-processor)")
+        logger.info("[DOWNLOAD] LAYER 1 (Primary - bestaudio/best + desktop UA + FFmpeg)")
         
-        yt_dlp_args = [
-            "yt-dlp",
-            "-f", "bestaudio/best",  # Prioritize best audio quality
-            "-o", os.path.join(temp_folder, "%(id)s.%(ext)s"),
-            "--no-warnings",
-            "--quiet",
-            "--socket-timeout", "30",
-            "--retries", "3",
-            "--fragment-retries", "3",
-            "--sleep-requests", "1",
-            "--user-agent", user_agents['layer1'],
-            "--extractor-args", "tiktok:api_hostname=api16-normal-useast5.us.tiktokv.com",
-            "-x",  # Extract audio
-            "--audio-format", "mp3",
-            "--audio-quality", "192",
-            "--postprocessor-args", "-b:a 192k -ar 16000 -ac 1",
-            url
-        ]
+        # Use yt-dlp to extract audio directly to MP3 if ffmpeg available
+        if has_ffmpeg:
+            yt_dlp_args = [
+                "yt-dlp",
+                "-f", "bestaudio/best",
+                "-x",
+                "--audio-format", "mp3",
+                "--audio-quality", "192",
+                "-o", output_path,
+                "--no-warnings",
+                "--quiet",
+                "--socket-timeout", "30",
+                "--retries", "3",
+                "--fragment-retries", "3",
+                "--sleep-requests", "1",
+                "--user-agent", user_agents['layer1'],
+                "--extractor-args", "tiktok:api_hostname=api16-normal-useast5.us.tiktokv.com",
+                url
+            ]
+        else:
+            # Download without extraction, will convert manually
+            temp_file = os.path.join(temp_folder, "temp_layer1.%(ext)s")
+            yt_dlp_args = [
+                "yt-dlp",
+                "-f", "bestaudio/best",
+                "-o", temp_file,
+                "--no-warnings",
+                "--quiet",
+                "--socket-timeout", "30",
+                "--retries", "3",
+                "--fragment-retries", "3",
+                "--user-agent", user_agents['layer1'],
+                "--extractor-args", "tiktok:api_hostname=api16-normal-useast5.us.tiktokv.com",
+                url
+            ]
         
-        # Add cookies if available
         if has_cookies:
-            yt_dlp_args.insert(2, "--cookies")
-            yt_dlp_args.insert(3, cookies_file)
+            yt_dlp_args.insert(1, "--cookies")
+            yt_dlp_args.insert(2, cookies_file)
         
-        result = subprocess.run(yt_dlp_args, capture_output=True, timeout=120, text=True)
+        result = subprocess.run(
+            yt_dlp_args,
+            capture_output=True,
+            timeout=120,
+            text=True
+        )
         last_error = result.stderr
         
+        # CRITICAL: Subprocess cleanup - ensure process handles released
+        time.sleep(0.1)  # Windows subprocess cleanup
+        
         if result.returncode == 0:
-            # Find and move the extracted mp3 file
-            for file in os.listdir(temp_folder):
-                if file.endswith('.mp3') and file != 'audio.mp3':
-                    extracted = os.path.join(temp_folder, file)
-                    shutil.move(extracted, audio_path)
-                    if os.path.exists(audio_path) and os.path.getsize(audio_path) > 1000:
-                        file_size = os.path.getsize(audio_path)
-                        logger.info(f"[{request_id}] ✅ LAYER 1 SUCCESS ({file_size} bytes, desktop UA, cookies={has_cookies})")
-                        return audio_path
+            # If ffmpeg extraction succeeded
+            if has_ffmpeg and os.path.exists(output_path) and os.path.getsize(output_path) > 1000:
+                file_size = os.path.getsize(output_path)
+                logger.info(f"[DOWNLOAD] LAYER 1 OK ({file_size} bytes, desktop + ffmpeg)")
+                return True
             
-            logger.warning(f"[{request_id}] Layer 1: Completed but no audio file produced")
-        else:
-            logger.warning(f"[{request_id}] 🟡 LAYER 1 FAILED: {result.stderr[:100]}")
+            # If no ffmpeg, look for downloaded file and convert
+            if not has_ffmpeg:
+                # SAFETY: File system flush
+                time.sleep(0.1)
+                for file in os.listdir(temp_folder):
+                    if file.startswith("temp_layer1") and file.endswith(('.m4a', '.aac', '.opus', '.webm')):
+                        temp_audio = os.path.join(temp_folder, file)
+                        if _convert_to_mp3(temp_audio, output_path):
+                            # _convert_to_mp3 cleanup removes temp_audio in finally block
+                            if os.path.exists(output_path) and os.path.getsize(output_path) > 1000:
+                                file_size = os.path.getsize(output_path)
+                                logger.info(f"[DOWNLOAD] LAYER 1 OK ({file_size} bytes, desktop + manual convert)")
+                                return True
+        
+        logger.warning(f"[DOWNLOAD] LAYER 1 FAILED: {last_error[:100]}")
     
     except subprocess.TimeoutExpired:
-        logger.warning(f"[{request_id}] 🟡 LAYER 1 TIMEOUT: Exceeded 120 seconds")
+        logger.warning("[DOWNLOAD] LAYER 1 TIMEOUT: 120s exceeded")
     except Exception as e:
-        logger.warning(f"[{request_id}] 🟡 LAYER 1 EXCEPTION: {str(e)[:100]}")
+        logger.warning(f"[DOWNLOAD] LAYER 1 EXCEPTION: {str(e)[:100]}")
     
     # ========================================
-    # LAYER 2: FALLBACK WITH MOBILE UA
-    # Alternative API hostname + mobile user agent + format fallback
+    # LAYER 2: FALLBACK (worstaudio + mobile UA + no FFmpeg)
     # ========================================
     try:
-        logger.info(f"[{request_id}] 🟡 LAYER 2: Fallback (mobile UA + alternative API + worstaudio format)")
+        logger.info("[DOWNLOAD] LAYER 2 (Fallback - worstaudio + mobile UA)")
         
+        temp_file = os.path.join(temp_folder, "temp_layer2.%(ext)s")
         yt_dlp_args = [
             "yt-dlp",
-            "-f", "worstaudio/worst",  # Fallback to worst quality but more compatible
-            "-o", os.path.join(temp_folder, "%(id)s.%(ext)s"),
+            "-f", "worstaudio/best",
+            "-o", temp_file,
             "--no-warnings",
             "--quiet",
             "--socket-timeout", "30",
             "--retries", "2",
             "--fragment-retries", "2",
-            "--sleep-requests", "2",
+            "--sleep-requests", "1",
             "--user-agent", user_agents['layer2'],
             "--extractor-args", "tiktok:api_hostname=api22.tiktok.com",
             url
         ]
         
-        # Add cookies if available
         if has_cookies:
-            yt_dlp_args.insert(2, "--cookies")
-            yt_dlp_args.insert(3, cookies_file)
+            yt_dlp_args.insert(1, "--cookies")
+            yt_dlp_args.insert(2, cookies_file)
         
-        result = subprocess.run(yt_dlp_args, capture_output=True, timeout=120, text=True)
+        result = subprocess.run(
+            yt_dlp_args,
+            capture_output=True,
+            timeout=120,
+            text=True
+        )
         last_error = result.stderr
         
+        # CRITICAL: Subprocess cleanup
+        time.sleep(0.1)  # Windows subprocess cleanup
+        
         if result.returncode == 0:
-            # Find downloaded file and convert with FFmpeg
-            downloaded_file = None
+            # Try to convert downloaded file
+            time.sleep(0.1)  # SAFETY: File system flush
             for file in os.listdir(temp_folder):
-                if (file.endswith(('.m4a', '.aac', '.opus', '.webm', '.mp4', '.mkv')) and 
-                    not file.startswith('video') and not file.startswith('audio')):
-                    downloaded_file = os.path.join(temp_folder, file)
-                    break
-            
-            if downloaded_file:
-                logger.info(f"[{request_id}] Converting with FFmpeg (Layer 2 download)")
-                ffmpeg_cmd = [
-                    "ffmpeg",
-                    "-i", downloaded_file,
-                    "-vn",
-                    "-acodec", "libmp3lame",
-                    "-ab", "192k",
-                    "-ar", "16000",
-                    "-ac", "1",
-                    "-y",
-                    audio_path
-                ]
-                
-                ffmpeg_result = subprocess.run(ffmpeg_cmd, capture_output=True, timeout=60, text=True)
-                
-                if ffmpeg_result.returncode == 0:
-                    if os.path.exists(audio_path) and os.path.getsize(audio_path) > 1000:
-                        file_size = os.path.getsize(audio_path)
-                        logger.info(f"[{request_id}] ✅ LAYER 2 SUCCESS ({file_size} bytes, mobile UA + FFmpeg, cookies={has_cookies})")
-                        return audio_path
-                else:
-                    logger.warning(f"[{request_id}] Layer 2: FFmpeg conversion failed - {ffmpeg_result.stderr[:80]}")
-            else:
-                logger.warning(f"[{request_id}] Layer 2: No downloadable file found")
-        else:
-            logger.warning(f"[{request_id}] 🟡 LAYER 2 FAILED: {result.stderr[:100]}")
+                if file.startswith("temp_layer2") and file.endswith(('.m4a', '.aac', '.opus', '.webm', '.mp4')):
+                    temp_audio = os.path.join(temp_folder, file)
+                    if _convert_to_mp3(temp_audio, output_path):
+                        # _convert_to_mp3 cleanup removes temp_audio in finally block
+                        if os.path.exists(output_path) and os.path.getsize(output_path) > 1000:
+                            file_size = os.path.getsize(output_path)
+                            logger.info(f"[DOWNLOAD] LAYER 2 OK ({file_size} bytes, mobile UA)")
+                            return True
+        
+        logger.warning(f"[DOWNLOAD] LAYER 2 FAILED: {last_error[:100]}")
     
     except subprocess.TimeoutExpired:
-        logger.warning(f"[{request_id}] 🟡 LAYER 2 TIMEOUT: Exceeded time limit")
+        logger.warning("[DOWNLOAD] LAYER 2 TIMEOUT: 120s exceeded")
     except Exception as e:
-        logger.warning(f"[{request_id}] 🟡 LAYER 2 EXCEPTION: {str(e)[:100]}")
+        logger.warning(f"[DOWNLOAD] LAYER 2 EXCEPTION: {str(e)[:100]}")
     
     # ========================================
-    # LAYER 3: FINAL FALLBACK
-    # Simple download (no post-processor) + local FFmpeg, generic UA, best format
+    # LAYER 3: FINAL FALLBACK (best + generic UA + minimal)
     # ========================================
     try:
-        logger.info(f"[{request_id}] 🔴 LAYER 3: Final fallback (generic UA + best format)")
+        logger.info("[DOWNLOAD] LAYER 3 (Final fallback - best format + minimal options)")
         
+        temp_file = os.path.join(temp_folder, "temp_layer3.%(ext)s")
         yt_dlp_args = [
             "yt-dlp",
-            "-f", "best",  # Just get the best available format
-            "-o", os.path.join(temp_folder, "%(id)s.%(ext)s"),
+            "-f", "best",
+            "-o", temp_file,
             "--no-warnings",
             "--quiet",
             "--socket-timeout", "30",
             "--retries", "1",
-            "--fragment-retries", "1",
-            "--sleep-requests", "3",
             "--user-agent", user_agents['layer3'],
             url
         ]
         
-        # Add cookies if available
         if has_cookies:
-            yt_dlp_args.insert(2, "--cookies")
-            yt_dlp_args.insert(3, cookies_file)
+            yt_dlp_args.insert(1, "--cookies")
+            yt_dlp_args.insert(2, cookies_file)
         
-        result = subprocess.run(yt_dlp_args, capture_output=True, timeout=120, text=True)
+        result = subprocess.run(
+            yt_dlp_args,
+            capture_output=True,
+            timeout=120,
+            text=True
+        )
         last_error = result.stderr
         
+        # CRITICAL: Subprocess cleanup
+        time.sleep(0.1)  # Windows subprocess cleanup
+        
         if result.returncode == 0:
-            # Find any downloaded file
-            downloaded_file = None
+            # Try to convert downloaded file
+            time.sleep(0.1)  # SAFETY: File system flush
             for file in os.listdir(temp_folder):
-                if (file.endswith(('.m4a', '.aac', '.opus', '.webm', '.mp4', '.mkv', '.mov', '.m4v')) and 
-                    not file.startswith('video') and not file.startswith('audio')):
-                    downloaded_file = os.path.join(temp_folder, file)
-                    break
-            
-            if downloaded_file:
-                logger.info(f"[{request_id}] Converting with FFmpeg (Layer 3 download)")
-                ffmpeg_cmd = [
-                    "ffmpeg",
-                    "-i", downloaded_file,
-                    "-vn",
-                    "-acodec", "libmp3lame",
-                    "-ab", "192k",
-                    "-ar", "16000",
-                    "-ac", "1",
-                    "-y",
-                    audio_path
-                ]
-                
-                ffmpeg_result = subprocess.run(ffmpeg_cmd, capture_output=True, timeout=60, text=True)
-                
-                if ffmpeg_result.returncode == 0:
-                    if os.path.exists(audio_path) and os.path.getsize(audio_path) > 1000:
-                        file_size = os.path.getsize(audio_path)
-                        logger.info(f"[{request_id}] ✅ LAYER 3 SUCCESS ({file_size} bytes, generic UA + FFmpeg, cookies={has_cookies})")
-                        return audio_path
-                else:
-                    logger.warning(f"[{request_id}] Layer 3: FFmpeg conversion failed - {ffmpeg_result.stderr[:80]}")
-            else:
-                logger.warning(f"[{request_id}] Layer 3: No downloadable file found")
-        else:
-            logger.warning(f"[{request_id}] 🟡 LAYER 3 FAILED: {result.stderr[:100]}")
+                if file.startswith("temp_layer3") and file.endswith(('.m4a', '.aac', '.opus', '.webm', '.mp4', '.mkv')):
+                    temp_audio = os.path.join(temp_folder, file)
+                    if _convert_to_mp3(temp_audio, output_path):
+                        # _convert_to_mp3 cleanup removes temp_audio in finally block
+                        if os.path.exists(output_path) and os.path.getsize(output_path) > 1000:
+                            file_size = os.path.getsize(output_path)
+                            logger.info(f"[DOWNLOAD] LAYER 3 OK ({file_size} bytes, minimal options)")
+                            return True
+        
+        logger.warning(f"[DOWNLOAD] LAYER 3 FAILED: {last_error[:100]}")
     
     except subprocess.TimeoutExpired:
-        logger.warning(f"[{request_id}] 🟡 LAYER 3 TIMEOUT: Exceeded time limit")
+        logger.warning("[DOWNLOAD] LAYER 3 TIMEOUT: 120s exceeded")
     except Exception as e:
-        logger.warning(f"[{request_id}] 🟡 LAYER 3 EXCEPTION: {str(e)[:100]}")
+        logger.warning(f"[DOWNLOAD] LAYER 3 EXCEPTION: {str(e)[:100]}")
     
     # ========================================
-    # ALL LAYERS FAILED - GRACEFUL ERROR
-    # Classify the error for the user
+    # ALL LAYERS FAILED
     # ========================================
-    logger.error(f"[{request_id}] ❌ ALL LAYERS EXHAUSTED: Download failed after 3 attempts")
-    logger.debug(f"[{request_id}] Last error output: {last_error[:200]}")
+    logger.error("[DOWNLOAD] FAIL ALL LAYERS - Download unsuccessful")
+    logger.debug(f"[DOWNLOAD] Last error: {last_error[:200]}")
     
-    # Classify error using last attempt's stderr
+    # Classify error
     error_type = classify_download_error(last_error)
+    logger.info(f"[DOWNLOAD] Error classified as: {error_type}")
     
-    if error_type == 'private':
-        msg = "⚠️ This video is private or unavailable. The creator may have hidden it."
-    elif error_type == 'blocked':
-        msg = "⚠️ This video is region-blocked or restricted. Try a different video."
-    elif error_type == 'rate_limited':
-        msg = "⚠️ Rate limited by the platform. Please wait a few minutes and try again."
-    elif error_type == 'timeout':
-        msg = "⏱️ Connection timeout. The video server is slow. Try again in a moment."
-    elif error_type == 'format':
-        msg = "⚠️ Video format not supported or couldn't be processed. Try another video."
-    else:
-        msg = "⚠️ Could not process this link. It may be private, restricted, or unsupported."
-    
-    logger.info(f"[{request_id}] Classified error: {error_type}")
-    
-    raise Exception(msg)
+    return False
 
 
 def download_video(url: str, output_path: str, request_id: str = "system", retry_count: int = 0) -> bool:
@@ -685,14 +905,41 @@ def get_temp_folder(request_id: str) -> str:
     Get isolated temp folder path for a request_id.
     Ensures each job has its own folder to prevent conflicts.
     Example: temp/a1b2c3d4/
+    
+    SAFETY: Pre-cleans any stale files from failed previous requests
+    with same ID to prevent file handle conflicts.
     """
     folder = os.path.join(TEMP_DIR, request_id)
+    
+    # If folder exists from previous run, clean stale temp files first
+    # This prevents file handle conflicts on Windows from leftover processes
+    if os.path.exists(folder):
+        try:
+            for file in os.listdir(folder):
+                if file.startswith('temp_'):
+                    fpath = os.path.join(folder, file)
+                    try:
+                        time.sleep(0.05)  # Windows file handle release
+                        if os.path.isfile(fpath):
+                            os.remove(fpath)
+                            logger.debug(f"[{request_id}] Cleaned stale: {file}")
+                    except:
+                        pass
+        except:
+            pass
+    
     os.makedirs(folder, exist_ok=True)
     return folder
 
 
 def cleanup_files(video_path: str, audio_path: str, request_id: str = "system") -> None:
-    """Safely cleanup temporary files and folder."""
+    """Safely cleanup ALL temporary files from request.
+    
+    CRITICAL: Aggressively removes intermediate layer files to prevent
+    accumulation and file handle exhaustion on next request. This is
+    essential for multi-request stability.
+    """
+    # Remove specified files
     for path in [video_path, audio_path]:
         if not path:
             continue
@@ -703,13 +950,36 @@ def cleanup_files(video_path: str, audio_path: str, request_id: str = "system") 
         except Exception as e:
             logger.warning(f"[{request_id}] Cleanup failed: {str(e)[:80]}")
     
-    # Clean up isolated temp folder
+    # CRITICAL: Aggressively clean all intermediate layer files
+    # This prevents accumulation of temp_layer*.* files that consume handles
     try:
-        temp_folder = get_temp_folder(request_id)
-        # Only try to remove if empty
-        if os.path.exists(temp_folder) and not os.listdir(temp_folder):
-            os.rmdir(temp_folder)
-            logger.debug(f"[{request_id}] Cleaned temp folder")
+        temp_folder = os.path.join(TEMP_DIR, request_id)
+        if os.path.exists(temp_folder):
+            for file in os.listdir(temp_folder):
+                # target: temp_layer1.*, temp_layer2.*, temp_layer3.*
+                # and any remaining media files
+                if file.startswith('temp_') or file.endswith(('.mp4', '.m4a', '.webm', '.opus', '.aac')):
+                    fpath = os.path.join(temp_folder, file)
+                    try:
+                        time.sleep(0.05)  # Windows file handle release
+                        if os.path.isfile(fpath):
+                            os.remove(fpath)
+                            logger.debug(f"[{request_id}] Cleaned layer file: {file}")
+                    except Exception as fe:
+                        logger.debug(f"[{request_id}] Could not remove {file}: {fe}")
+    except Exception as e:
+        logger.debug(f"[{request_id}] Aggressive cleanup error: {e}")
+    
+    # Finally, try to remove isolated temp folder if now empty
+    try:
+        temp_folder = os.path.join(TEMP_DIR, request_id)
+        if os.path.exists(temp_folder):
+            time.sleep(0.1)  # Wait for any lingering processes
+            if not os.listdir(temp_folder):  # Only if empty
+                os.rmdir(temp_folder)
+                logger.debug(f"[{request_id}] Cleaned temp folder")
+            else:
+                logger.debug(f"[{request_id}] Temp folder not empty, leaving for cleanup")
     except Exception as e:
         logger.debug(f"[{request_id}] Could not remove temp folder: {e}")
 
@@ -754,46 +1024,130 @@ def process_transcription(url: str, request_id: str = "system", progress_callbac
     progress_callback: async function(stage_name) called at each processing stage
     Uses isolated temp folder per request_id to prevent conflicts.
     Integrated with 3-layer fallback system for robust audio extraction.
+    
+    CRITICAL: Handles duplicates via wait+poll, NOT exceptions
     """
     try:
         if not is_valid_tiktok_url(url):
             logger.warning(f"[{request_id}] Invalid TikTok URL")
             raise Exception("Invalid TikTok URL")
+        
+        # DUPLICATE PROCESSING PREVENTION - NEW FLOW
+        # Step 1: Check memory cache FIRST (fastest)
+        cached_result = cache_get(url)
+        if cached_result:
+            logger.info(f"[{request_id}] Memory cache hit - returning instantly")
+            return cached_result
+        
+        # Step 2: Check if already processing (duplicate detection)
+        # If yes, WAIT for result without raising exception
+        with _processing_lock:
+            if url in _processing_links:
+                logger.info(f"[{request_id}] Duplicate detected - waiting for result")
+                # Don't add to processing_links, just wait for the first request
+                # Release lock before waiting
+        
+        # If duplicate was detected, wait for result without raising exception
+        if url in _processing_links:
+            logger.info(f"[{request_id}] Waiting for duplicate processing to complete")
+            for wait_attempt in range(60):  # Wait up to 60 seconds
+                time.sleep(1)
+                
+                # Check cache for result
+                cached_result = cache_get(url)
+                if cached_result:
+                    logger.info(f"[{request_id}] Duplicate resolved - got result after {wait_attempt+1}s")
+                    return cached_result
+            
+            # Timeout waiting for duplicate
+            logger.error(f"[{request_id}] Timeout waiting for duplicate result (60s)")
+            raise Exception("Processing timeout - link is taking too long on another request")
+        
+        # Step 3: Mark as processing (only if not a duplicate)
+        with _processing_lock:
+            _processing_links.add(url)
+            logger.debug(f"[{request_id}] Added link to processing set. Active: {len(_processing_links)}")
 
         # PRODUCTION HARDENING: Use isolated temp folder per request_id
-        # Prevents conflicts when multiple jobs run concurrently
         temp_folder = get_temp_folder(request_id)
         audio_path = os.path.join(temp_folder, "audio.mp3")
 
         try:
             # Step 1: Download with 3-layer fallback system
             logger.info(f"[{request_id}] Starting download with fallback protection")
-            if progress_callback:
-                asyncio.create_task(progress_callback("downloading"))
             
-            # Use new robust fallback system instead of old download_video + extract_audio
-            audio_path = download_audio_with_fallback(url, temp_folder, request_id)
+            # SAFETY: Only invoke progress_callback in async context
+            if progress_callback:
+                try:
+                    asyncio.create_task(progress_callback("downloading"))
+                except RuntimeError:
+                    logger.debug(f"[{request_id}] No event loop for callback, continuing")
+            
+            # Use new robust fallback system - returns bool
+            success = download_audio_with_fallback(url, audio_path)
+            
+            if not success:
+                raise Exception("Could not process this link. It may be private, restricted, unsupported, or temporarily unavailable. Try another video.")
 
             # Step 2: Transcribe
             logger.info(f"[{request_id}] Starting transcription")
+            
+            # SAFETY: Only invoke progress_callback in async context
             if progress_callback:
-                asyncio.create_task(progress_callback("transcribing"))
+                try:
+                    asyncio.create_task(progress_callback("transcribing"))
+                except RuntimeError:
+                    logger.debug(f"[{request_id}] No event loop for callback, continuing")
             
             transcript = transcribe(audio_path, request_id)
             
             if not transcript:
                 raise Exception("Transcription failed or returned empty")
 
-            logger.info(f"[{request_id}] Processing complete: {len(transcript)} chars")
+            # Cache result before returning
+            cache_set(url, transcript)
+            logger.info(f"[{request_id}] Cached result - {len(transcript)} chars")
+            
+            logger.info(f"[{request_id}] Processing complete - {len(transcript)} chars")
             return transcript
 
         finally:
-            # Always cleanup (audio_path is the only file we create now)
+            # DUPLICATE PROCESSING PREVENTION: Remove from active processing set
+            try:
+                with _processing_lock:
+                    _processing_links.discard(url)
+                    logger.debug(f"[{request_id}] Removed link from processing set. Active: {len(_processing_links)}")
+            except:
+                pass
+            
+            # CRITICAL: Always cleanup
             cleanup_files(audio_path, "", request_id)
+            
+            # Also explicitly remove temp folder contents
+            try:
+                temp_folder = os.path.join(TEMP_DIR, request_id)
+                if os.path.exists(temp_folder):
+                    for file in os.listdir(temp_folder):
+                        try:
+                            fpath = os.path.join(temp_folder, file)
+                            if os.path.isfile(fpath):
+                                time.sleep(0.05)
+                                os.remove(fpath)
+                        except:
+                            pass
+                    # Try to remove folder once empty
+                    try:
+                        time.sleep(0.1)
+                        if not os.listdir(temp_folder):
+                            os.rmdir(temp_folder)
+                    except:
+                        pass
+            except:
+                pass
 
     except Exception as e:
         error_msg = str(e)
-        logger.error(f"[{request_id}] Processing failed: {error_msg}")
+        logger.error(f"[{request_id}] Processing failed - {error_msg}")
         raise
 
 
@@ -816,13 +1170,13 @@ async def handle_telegram_message(update: Update, context: ContextTypes.DEFAULT_
             
             if not all_links:
                 await update.message.reply_text(
-                    "❌ No links found.\n\n"
+                    "ERROR: No links found.\n\n"
                     "Please send a message with a valid video link:\n\n"
                     "Supported platforms:\n"
-                    "• TikTok (tiktok.com, vm.tiktok.com)\n"
-                    "• YouTube (youtube.com, youtu.be)\n"
-                    "• Instagram\n"
-                    "• Twitter/X\n\n"
+                    "- TikTok (tiktok.com, vm.tiktok.com)\n"
+                    "- YouTube (youtube.com, youtu.be)\n"
+                    "- Instagram\n"
+                    "- Twitter/X\n\n"
                     "Use /help for more commands."
                 )
                 return
@@ -833,7 +1187,7 @@ async def handle_telegram_message(update: Update, context: ContextTypes.DEFAULT_
             
             if not valid_links:
                 await update.message.reply_text(
-                    "❌ No valid video links found.\n\n"
+                    "ERROR: No valid video links found.\n\n"
                     "I support: TikTok, YouTube, Instagram, Twitter/X\n"
                     "Use /help for examples."
                 )
@@ -842,7 +1196,7 @@ async def handle_telegram_message(update: Update, context: ContextTypes.DEFAULT_
             # FEATURE 2: Enforce max 3 links per message
             if len(valid_links) > 3:
                 await update.message.reply_text(
-                    f"⚠️ You sent {len(valid_links)} links, but max is 3 per message.\n"
+                    f"WARNING: You sent {len(valid_links)} links, but max is 3 per message.\n"
                     f"I'll process the first 3."
                 )
                 valid_links = valid_links[:3]
@@ -858,31 +1212,67 @@ async def handle_telegram_message(update: Update, context: ContextTypes.DEFAULT_
                     normalized_link = resolve_url(link)
                     logger.info(f"[{request_id}] Normalized to: {normalized_link[:60]}")
                     
+                    # SMART JOB QUEUE: Check if job is already being processed or completed
+                    job_status = get_job_status(normalized_link)
+                    
                     # PRODUCTION HARDENING: Check in-memory cache first (reduces DB calls)
                     cached_result = cache_get(normalized_link)
                     if cached_result:
-                        logger.info(f"[{request_id}] ⚡ Memory cache hit - returning instantly")
+                        logger.info(f"[{request_id}] FAST Memory cache hit - returning instantly")
                         transcript = cached_result
                         
                         await update.message.reply_text(
-                            "⚡ *Already processed!* Returning from memory.\n\n"
+                            "FAST Already processed! Returning from memory.\n\n"
                             "Processing time: <1 second"
                         )
-                    # FEATURE 4: Job reuse - check if already processed (DB fallback)
-                    elif (existing_job := get_job_by_link(normalized_link)) and existing_job.get('result'):
-                        logger.info(f"[{request_id}] ⚡ Database cache hit - returning saved result")
-                        transcript = existing_job['result']
-                        
-                        # Store in memory cache for future requests
-                        cache_set(normalized_link, transcript)
+                    # SMART QUEUE: If job is already completed in queue, return result
+                    elif job_status.get('status') == 'completed':
+                        logger.info(f"[{request_id}] FAST Job queue hit - job already completed")
+                        transcript = job_status['result']
+                        cache_set(normalized_link, transcript)  # Refresh memory cache
                         
                         await update.message.reply_text(
-                            "⚡ *Already processed!* Returning saved result.\n\n"
+                            "FAST Already processed! Returning completed result.\n\n"
+                            "Processing time: <1 second (from queue)"
+                        )
+                    # SMART QUEUE: If job is currently processing, register as waiting user
+                    elif job_status.get('status') == 'processing':
+                        logger.info(f"[{request_id}] Smart queue: Job already processing - registering as waiting user")
+                        
+                        # Register this user to be notified when job completes
+                        register_waiting_user(normalized_link, {
+                            'type': 'telegram',
+                            'user_id': user_id,
+                            'chat_id': update.message.chat_id,
+                            'message_id': update.message.message_id
+                        })
+                        
+                        await update.message.reply_text(
+                            "INFO Someone else is already processing this link.\n"
+                            "You'll be notified when their processing completes.\n"
+                            "No duplicate processing needed!"
+                        )
+                        continue
+                    # FEATURE 4: Job reuse - check if already processed (DB fallback)
+                    elif (existing_job := get_job_by_link(normalized_link)) and existing_job.get('result'):
+                        logger.info(f"[{request_id}] FAST Database cache hit - returning saved result")
+                        transcript = existing_job['result']
+                        
+                        # Store in memory cache and job queue for future requests
+                        cache_set(normalized_link, transcript)
+                        create_job_entry(normalized_link, existing_job['id'] or request_id)
+                        complete_job(normalized_link, result=transcript)
+                        
+                        await update.message.reply_text(
+                            "FAST Already processed! Returning saved result.\n\n"
                             f"Processed: {existing_job['created_at'][:10]}"
                         )
                     else:
                         # New processing required
                         logger.info(f"[{request_id}] Cache miss - processing new link")
+                        
+                        # Create job queue entry to track this processing
+                        create_job_entry(normalized_link, request_id)
                         
                         # Create job in database with NORMALIZED link for caching
                         try:
@@ -895,7 +1285,7 @@ async def handle_telegram_message(update: Update, context: ContextTypes.DEFAULT_
                         try:
                             position = get_queue_position(request_id)
                             if position and position > 0:
-                                logger.info(f"[{request_id}] 📍 Queue position: {position}")
+                                logger.info(f"[{request_id}] QUEUE Position: {position}")
                                 
                                 # Calculate estimated wait time
                                 wait_time = get_estimated_wait_time(position)
@@ -903,20 +1293,20 @@ async def handle_telegram_message(update: Update, context: ContextTypes.DEFAULT_
                                 
                                 # Initial queue message with position and estimate
                                 status_msg = await update.message.reply_text(
-                                    f"⏳ Queued successfully!\n"
-                                    f"📍 Position in queue: {position}\n"
-                                    f"⏱️ Estimated wait: {wait_str}\n"
+                                    f"WAITING Queued successfully!\n"
+                                    f"POSITION {position}\n"
+                                    f"ESTIMATED {wait_str}\n"
                                     f"You'll be notified when processing starts."
                                 )
                             else:
                                 status_msg = await update.message.reply_text(
-                                    f"⏳ Queued successfully!\n"
+                                    f"WAITING Queued successfully!\n"
                                     f"Processing will start shortly."
                                 )
                         except Exception as e:
                             logger.warning(f"[{request_id}] Failed to show queue position: {e}")
                             status_msg = await update.message.reply_text(
-                                f"⏳ Queued successfully!\n"
+                                f"WAITING Queued successfully!\n"
                                 f"Processing will start shortly."
                             )
                         
@@ -931,13 +1321,13 @@ async def handle_telegram_message(update: Update, context: ContextTypes.DEFAULT_
                             """Update Telegram message with current processing stage."""
                             try:
                                 stage_messages = {
-                                    "downloading": "⬇️ Downloading video...",
-                                    "extracting": "🎧 Extracting audio...",
-                                    "transcribing": "🧠 Transcribing audio...",
-                                    "completed": "✅ Processing complete!"
+                                    "downloading": "DOWNLOADING video...",
+                                    "extracting": "EXTRACTING audio...",
+                                    "transcribing": "TRANSCRIBING audio...",
+                                    "completed": "DONE Processing complete!"
                                 }
                                 
-                                message_text = stage_messages.get(stage, f"⚙️ Processing: {stage}...")
+                                message_text = stage_messages.get(stage, f"PROCESSING: {stage}...")
                                 logger.info(f"[{request_id}] {message_text}")
                                 
                                 # Try to edit the message
@@ -955,6 +1345,7 @@ async def handle_telegram_message(update: Update, context: ContextTypes.DEFAULT_
                         
                         try:
                             # Process transcription with progress callback
+                            # Note: Duplicates are handled transparently within process_transcription
                             transcript = process_transcription(
                                 normalized_link, 
                                 request_id,
@@ -964,58 +1355,104 @@ async def handle_telegram_message(update: Update, context: ContextTypes.DEFAULT_
                             # Save result to database
                             try:
                                 save_result(request_id, transcript)
-                                logger.info(f"[{request_id}] ✅ Result saved to database")
+                                logger.info(f"[{request_id}] Result saved to database")
                                 
                                 # PRODUCTION HARDENING: Cache in memory for instant future lookups
                                 cache_set(normalized_link, transcript)
-                                logger.info(f"[{request_id}] 💾 Result cached in memory")
+                                
+                                # SMART JOB QUEUE: Mark job as completed and notify waiting users
+                                complete_job(normalized_link, result=transcript)
+                                
+                                # Notify all waiting users
+                                waiting_users = get_waiting_users(normalized_link)
+                                if waiting_users:
+                                    logger.info(f"[{request_id}] Notifying {len(waiting_users)} waiting users")
+                                    for user in waiting_users:
+                                        try:
+                                            if user['type'] == 'telegram':
+                                                chat_id = user['chat_id']
+                                                await context.bot.send_message(
+                                                    chat_id=chat_id,
+                                                    text="INFO The link you were waiting for is now ready!\n"
+                                                         "Your result is being prepared..."
+                                                )
+                                                logger.debug(f"[{request_id}] Notified user {user['user_id']}")
+                                        except Exception as notify_e:
+                                            logger.warning(f"[{request_id}] Notification failed: {notify_e}")
+                                    
+                                    # Clear waiting users after notifying
+                                    clear_waiting_users(normalized_link)
                             except Exception as e:
                                 logger.warning(f"[{request_id}] Failed to save result: {e}")
                             
                             # Edit final message to show completion
                             try:
-                                await status_msg.edit_text("✅ Done! Sending your transcript...")
+                                await status_msg.edit_text("DONE! Sending your transcript...")
                             except:
                                 try:
-                                    await update.message.reply_text("✅ Done! Sending transcript...")
+                                    await update.message.reply_text("DONE! Sending transcript...")
                                 except:
                                     pass
                         
                         except Exception as e:
                             error_msg = str(e)
-                            logger.error(f"[{request_id}] Processing error: {error_msg}")
+                            logger.error(f"[{request_id}] Processing failed - {error_msg}")
                             
                             # Save error to database
                             try:
                                 save_error(request_id, error_msg)
-                                logger.info(f"[{request_id}] ❌ Error saved to database")
+                                logger.info(f"[{request_id}] Error saved to database")
                             except Exception as db_e:
                                 logger.warning(f"[{request_id}] Failed to save error: {db_e}")
                             
-                            # Show specific error message from fallback system
-                            # (includes helpful hints about private videos, rate limits, etc)
-                            error_display = error_msg
-                            if "Invalid TikTok URL" in error_msg:
-                                error_display = "❌ Invalid video link. Please check the URL."
+                            # SMART JOB QUEUE: Mark job as failed and notify waiting users
+                            complete_job(normalized_link, error=error_msg)
+                            logger.info(f"[{request_id}] Job marked as failed")
                             
-                            # Update message with error
-                            try:
-                                await status_msg.edit_text(error_display)
-                            except:
+                            # Notify all waiting users about the failure
+                            waiting_users = get_waiting_users(normalized_link)
+                            if waiting_users:
+                                logger.info(f"[{request_id}] Notifying {len(waiting_users)} of failure")
+                                for user in waiting_users:
+                                    try:
+                                        if user['type'] == 'telegram':
+                                            chat_id = user['chat_id']
+                                            await context.bot.send_message(
+                                                chat_id=chat_id,
+                                                text=f"ERROR The link failed to process.\n"
+                                                     f"Reason: {error_msg[:100]}"
+                                            )
+                                            logger.debug(f"[{request_id}] Notified fail - user {user['user_id']}")
+                                    except Exception as notify_e:
+                                        logger.warning(f"[{request_id}] Failed to notify: {notify_e}")
+                                    
+                                    # Clear waiting users after notifying
+                                    clear_waiting_users(normalized_link)
+                                
+                                # Show specific error message from fallback system
+                                # (includes helpful hints about private videos, rate limits, etc)
+                                error_display = error_msg
+                                if "Invalid TikTok URL" in error_msg:
+                                    error_display = "ERROR Invalid video link. Please check the URL."
+                                
+                                # Update message with error
                                 try:
-                                    await update.message.reply_text(error_display)
+                                    await status_msg.edit_text(error_display)
                                 except:
-                                    pass
-                            
-                            continue
+                                    try:
+                                        await update.message.reply_text(error_display)
+                                    except:
+                                        pass
+                                
+                                continue
                     
                     # Send transcript (split if too long)
                     chunks = [transcript[i:i+4000] for i in range(0, len(transcript), 4000)]
                     for chunk_idx, chunk in enumerate(chunks):
                         if len(valid_links) > 1:
-                            header = f"📹 Link {idx}/{len(valid_links)}"
+                            header = f"VIDEO Link {idx}/{len(valid_links)}"
                         else:
-                            header = "📝 Transcript"
+                            header = "TRANSCRIPT"
                         
                         if len(chunks) > 1:
                             header += f" (Part {chunk_idx + 1}/{len(chunks)})"
@@ -1023,12 +1460,12 @@ async def handle_telegram_message(update: Update, context: ContextTypes.DEFAULT_
                         await update.message.reply_text(f"{header}\n\n{chunk}")
                     
                     processed_count += 1
-                    logger.info(f"[{request_id}] ✅ Link {idx} completed")
+                    logger.info(f"[{request_id}] OK Link {idx} completed")
                 
                 except Exception as link_error:
                     logger.error(f"[LINK {idx}] Failed to process: {str(link_error)}", exc_info=True)
                     try:
-                        await update.message.reply_text(f"❌ Failed to process link {idx}. Try another video.")
+                        await update.message.reply_text(f"ERROR Failed to process link {idx}. Try another video.")
                     except:
                         pass
             
@@ -1037,7 +1474,7 @@ async def handle_telegram_message(update: Update, context: ContextTypes.DEFAULT_
         except Exception as e:
             logger.error(f"[TELEGRAM] Handler error: {str(e)}", exc_info=True)
             try:
-                await update.message.reply_text(f"❌ Error: {str(e)[:80]}")
+                await update.message.reply_text(f"ERROR {str(e)[:80]}")
             except:
                 pass
 
@@ -1046,7 +1483,7 @@ async def handle_telegram_start(update: Update, context: ContextTypes.DEFAULT_TY
     """Handle /start command."""
     user_id = str(update.message.from_user.id)
     await update.message.reply_text(
-        "🎬 *ClipScript AI*\n\n"
+        "VIDEO ClipScript AI\n\n"
         "Turn TikTok videos into text transcripts instantly.\n\n"
         "*Commands:*\n"
         "• Send any TikTok link → transcribe\n"
@@ -1067,21 +1504,21 @@ async def handle_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         job = get_latest_job(user_id)
         
         if not job:
-            await update.message.reply_text("📋 No previous jobs found.\n\nSend a TikTok link to get started!")
+            await update.message.reply_text("LIST No previous jobs found.\n\nSend a TikTok link to get started!")
             return
         
         status_emoji = get_status_emoji(job['status'])
         link_short = shorten_url(job['link'])
         
-        response = f"{status_emoji} *Status:* {job['status'].upper()}\n"
-        response += f"🔗 *Link:* `{link_short}`\n"
-        response += f"⏰ *Created:* {job['created_at'][:16]}\n"
+        response = f"{status_emoji} STATUS: {job['status'].upper()}\n"
+        response += f"LINK: {link_short}\n"
+        response += f"CREATED: {job['created_at'][:16]}\n"
         
         if job['status'] == 'completed' and job['result']:
             result_preview = job['result'][:100] + "..." if len(job['result']) > 100 else job['result']
-            response += f"\n📝 *Preview:*\n`{result_preview}`"
+            response += f"\nTRANSCRIPT:\n{result_preview}"
         elif job['status'] == 'failed' and job['error']:
-            response += f"\n❌ *Error:* {job['error'][:80]}"
+            response += f"\nERROR: {job['error'][:80]}"
         
         await update.message.reply_text(response, parse_mode="Markdown")
         
@@ -1098,10 +1535,10 @@ async def handle_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
         jobs = get_user_jobs(user_id, limit=5)
         
         if not jobs:
-            await update.message.reply_text("📋 No history yet.\n\nSend a TikTok link to get started!")
+            await update.message.reply_text("LIST No history yet.\n\nSend a TikTok link to get started!")
             return
         
-        response = "📋 *Your Last 5 Requests:*\n\n"
+        response = "LIST Your Last 5 Requests:\n\n"
         for idx, job in enumerate(jobs, 1):
             status_emoji = get_status_emoji(job['status'])
             link_short = shorten_url(job['link'], max_length=30)
@@ -1117,23 +1554,23 @@ async def handle_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /help command - show usage guide."""
     help_text = (
-        "🎯 *How to Use ClipScript AI*\n\n"
-        "*Transcribe:*\n"
+        "GUIDE How to Use ClipScript AI\n\n"
+        "TRANSCRIBE:\n"
         "Simply send me any TikTok link:\n"
-        "• https://www.tiktok.com/@username/video/123456\n"
-        "• https://vm.tiktok.com/abc123xyz\n"
-        "• https://vt.tiktok.com/xyz\n\n"
-        "*Commands:*\n"
+        "- https://www.tiktok.com/@username/video/123456\n"
+        "- https://vm.tiktok.com/abc123xyz\n"
+        "- https://vt.tiktok.com/xyz\n\n"
+        "COMMANDS:\n"
         "/status - View your current job\n"
         "/history - View last 5 requests\n"
         "/help - Show this help message\n\n"
-        "*Speed:*\n"
-        "⚡ Most videos: 5-15 seconds\n"
-        "⚡ Longer videos: up to 30 seconds\n\n"
-        "*API:*\n"
-        "Use Deepgram for accurate transcription\n"
-        "FFmpeg for audio extraction\n"
-        "yt-dlp for video download"
+        "SPEED:\n"
+        "FAST Most videos: 5-15 seconds\n"
+        "FAST Longer videos: up to 30 seconds\n\n"
+        "BACKEND:\n"
+        "Uses Deepgram for accurate transcription\n"
+        "Uses FFmpeg for audio extraction\n"
+        "Uses yt-dlp for video download"
     )
     await update.message.reply_text(help_text, parse_mode="Markdown")
 
@@ -1284,7 +1721,7 @@ def api_transcribe():
                 existing_job = get_job_by_link(normalized_link)
                 
                 if existing_job and existing_job.get('result'):
-                    logger.info(f"[{request_id}] ⚡ Cache hit - returning saved result")
+                    logger.info(f"[{request_id}] FAST Cache hit - returning saved result")
                     transcript = existing_job['result']
                     cache_hit = True
                 else:
@@ -1298,8 +1735,11 @@ def api_transcribe():
                     except Exception as e:
                         logger.warning(f"[{request_id}] Database failed: {e}")
                     
-                    # Process transcription
-                    transcript = process_transcription(normalized_link, request_id)
+                    # Process transcription (handles duplicates transparently)
+                    try:
+                        transcript = process_transcription(normalized_link, request_id)
+                    except Exception as processing_error:
+                        raise processing_error
                     
                     # Save result
                     try:
@@ -1317,11 +1757,21 @@ def api_transcribe():
                     'cache_hit': cache_hit
                 })
                 
-                logger.info(f"[{request_id}] ✅ Processed: {len(transcript)} chars")
+                logger.info(f"[{request_id}] OK Processed: {len(transcript)} chars")
             
             except Exception as link_error:
                 error_msg = str(link_error)
                 logger.error(f"[Link {idx}] Processing failed: {error_msg}")
+                
+                # Only mark job as failed for real processing errors
+                # (not for duplicates, which are handled transparently)
+                if "DUPLICATE" not in error_msg.upper():
+                    try:
+                        normalized_link = resolve_url(link)
+                        complete_job(normalized_link, error=error_msg)
+                        logger.info(f"Job marked as failed")
+                    except Exception as q_e:
+                        logger.warning(f"Failed to mark job as failed: {q_e}")
                 
                 results.append({
                     'success': False,
@@ -1461,6 +1911,20 @@ def ensure_directories():
 
 
 # ============================================
+# STARTUP GUARD - Prevent duplicate bot instances
+# ============================================
+_TELEGRAM_POLLING_STARTED = False
+_STARTUP_LOCK = threading.Lock()
+
+def _is_reloader_process():
+    """
+    Check if this is a Flask reloader process (NOT the main process).
+    Flask's reloader spawns child processes with WERKZEUG_RUN_MAIN env var.
+    We should SKIP bot startup in reloader child processes.
+    """
+    return os.environ.get('WERKZEUG_RUN_MAIN') != 'true'
+
+# ============================================
 # MAIN
 # ============================================
 
@@ -1472,20 +1936,20 @@ if __name__ == '__main__':
     config = get_startup_config()
     
     logger.info("="*70)
-    logger.info(f"🚀 Starting ClipScript AI - Unified Backend")
-    logger.info(f"📍 Environment: {config['environment']}")
-    logger.info(f"🔧 Transcription Service: {TRANSCRIPTION_SERVICE}")
-    logger.info(f"🌐 Server: http://{config['host']}:{config['port']}")
-    logger.info(f"🐛 Debug Mode: {config['debug']}")
+    logger.info(f"START ClipScript AI - Unified Backend")
+    logger.info(f"CONFIG Environment: {config['environment']}")
+    logger.info(f"CONFIG Transcription Service: {TRANSCRIPTION_SERVICE}")
+    logger.info(f"CONFIG Server: http://{config['host']}:{config['port']}")
+    logger.info(f"CONFIG Debug Mode: {config['debug']}")
     logger.info("="*70)
     
     # Initialize database
     try:
         init_db()
-        logger.info("✓ Database initialized successfully")
+        logger.info("OK Database initialized successfully")
     except Exception as e:
-        logger.error(f"✗ Failed to initialize database: {e}")
-        logger.warning("⚠️  Continuing without persistence layer")
+        logger.error(f"FAIL Failed to initialize database: {e}")
+        logger.warning("WARNING Continuing without persistence layer")
     
     # Cleanup orphaned files from previous runs
     cleanup_old_temp_files()
@@ -1498,19 +1962,27 @@ if __name__ == '__main__':
 
     if webhook_url:
         # Production mode: Use webhook
-        logger.info("📡 WEBHOOK MODE - Telegram webhook enabled (production)")
+        logger.info("CONFIG WEBHOOK MODE - Telegram webhook enabled (production)")
         setup_telegram_webhook()
-        logger.info("✓ Unified backend ready for Telegram (webhook) + Web API requests")
+        logger.info("OK Unified backend ready for Telegram (webhook) + Web API requests")
         logger.info("="*70)
         app.run(
             host=config['host'],
             port=config['port'],
-            debug=config['debug'],
+            debug=False,  # MUST be False in production to prevent reloader
             use_reloader=False  # Disable reloader in production
         )
     else:
         # Development mode: Use polling
-        logger.info("🔄 POLLING MODE - Telegram polling enabled (development)")
+        logger.info("CONFIG POLLING MODE - Telegram polling enabled (development)")
+        
+        # CRITICAL: Prevent Flask reloader from spawning multiple bot instances
+        # Flask's reloader creates child processes that we must detect
+        is_reloader = _is_reloader_process()
+        
+        if is_reloader:
+            logger.warning("WARNING RELOADER CHILD PROCESS - Skipping bot startup to prevent duplicate instances")
+            logger.info("INFO Set FLASK_ENV=production or use_reloader=False to prevent this")
         
         # Start Flask in a background thread
         flask_thread = threading.Thread(
@@ -1518,19 +1990,49 @@ if __name__ == '__main__':
                 host=config['host'],
                 port=config['port'],
                 debug=config['debug'],
-                use_reloader=False
+                use_reloader=False  # ALWAYS disable reloader to prevent duplicate instances
             ),
             daemon=True
         )
         flask_thread.start()
-        logger.info("✓ Flask server started in background")
-        logger.info("✓ Unified backend ready for Telegram (polling) + Web API requests")
+        logger.info("OK Flask server started in background")
+        logger.info("OK Unified backend ready for Telegram (polling) + Web API requests")
         logger.info("="*70)
         
-        # Start Telegram polling in main thread
-        logger.info("🤖 Starting Telegram bot polling...")
-        try:
-            asyncio.run(telegram_app.run_polling())
-        except KeyboardInterrupt:
-            logger.info("⏹️  Telegram polling stopped by user")
-            exit(0)
+        # GUARD: Only start Telegram polling in main process, NOT in Flask reloader children
+        if not is_reloader:
+            with _STARTUP_LOCK:
+                # Double-check to prevent race conditions
+                if not _TELEGRAM_POLLING_STARTED:
+                    _TELEGRAM_POLLING_STARTED = True
+                    
+                    # Start Telegram polling in main thread
+                    logger.info("BOT Starting Telegram bot polling...")
+                    logger.info("WARNING IMPORTANT: Only ONE bot instance should be running!")
+                    logger.info("INFO If you see 'Conflict: terminated by other getUpdates' errors:")
+                    logger.info("    1. Check that Flask has use_reloader=False")
+                    logger.info("    2. Kill any other bot instance: pkill python")
+                    logger.info("    3. Restart the application")
+                    
+                    try:
+                        asyncio.run(telegram_app.run_polling())
+                    except KeyboardInterrupt:
+                        logger.info("STOP Telegram polling stopped by user")
+                        exit(0)
+                    except Exception as e:
+                        logger.error(f"Fatal polling error: {e}")
+                        logger.error(f"If you see 'terminated by other getUpdates request':")
+                        logger.error(f"  - Kill conflicting bot: pkill -f 'python.*app_unified'")
+                        logger.error(f"  - Wait 10-15 seconds for Telegram side to clear the token")
+                        logger.error(f"  - Restart the application")
+                        exit(1)
+                else:
+                    logger.warning("INFO Skipping Telegram polling - already started")
+        else:
+            logger.info("INFO Flask will continue running in reloader child, Telegram polling skipped")
+            # Keep reloader child alive
+            try:
+                while True:
+                    asyncio.run(asyncio.sleep(1))
+            except KeyboardInterrupt:
+                exit(0)

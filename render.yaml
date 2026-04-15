@@ -13,7 +13,8 @@ services:
       pip install -r requirements.txt
     
     # Start unified backend (Telegram + Web API + Web UI)
-    startCommand: python app_unified.py
+    # CRITICAL: FLASK_ENV=production prevents reloader which causes duplicate bot instances
+    startCommand: FLASK_ENV=production python app_unified.py
     
     # Python version (3.13 recommended, 3.11+ supported)
     runtime: python-3.13
