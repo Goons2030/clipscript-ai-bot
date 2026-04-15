@@ -34,35 +34,6 @@ TRANSCRIPTION_SERVICE = os.getenv("TRANSCRIPTION_SERVICE", "deepgram")
 if not BOT_TOKEN:
     raise ValueError("Missing BOT_TOKEN in .env")
 
-# Setup logging (file + console, UTF-8 safe)
-log_format = logging.Formatter('[%(asctime)s] %(name)s - %(levelname)s - %(message)s')
-
-# Create logs directory
-os.makedirs('logs', exist_ok=True)
-
-# File handler
-file_handler = logging.FileHandler('logs/clipscript_unified.log')
-file_handler.setLevel(logging.INFO)
-file_handler.setFormatter(log_format)
-
-# Console handler with safe encoding for Windows
-try:
-    # Reconfigure stdout to replace problematic characters
-    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
-except:
-    pass
-console_handler = logging.StreamHandler(sys.stdout)
-console_handler.setLevel(logging.INFO)
-console_handler.setFormatter(log_format)
-
-# Root logger
-root_logger = logging.getLogger()
-root_logger.setLevel(logging.INFO)
-root_logger.addHandler(file_handler)
-root_logger.addHandler(console_handler)
-
-logger = logging.getLogger(__name__)
-
 def clean_ascii(text: str) -> str:
     """
     Remove non-ASCII characters that break Windows logging.
@@ -97,21 +68,55 @@ def clean_ascii(text: str) -> str:
     
     return text
 
-
-def safe_log(level: str, message: str, *args, **kwargs):
-    """
-    Safe logging that handles unicode/emoji characters without crashing.
-    Cleans the message before logging.
-    """
-    try:
-        clean_msg = clean_ascii(message)
-        getattr(logger, level)(clean_msg, *args, **kwargs)
-    except Exception as e:
-        # Emergency fallback
+class AsciiLoggingFilter(logging.Filter):
+    """Logging filter that ensures all messages are ASCII-safe."""
+    
+    def filter(self, record):
+        """Apply clean_ascii to log message before logging."""
         try:
-            logger.info(f"[SAFE_LOG_ERROR] {str(e)[:50]}")
-        except:
-            pass
+            record.msg = clean_ascii(str(record.msg))
+            # Also clean arguments if they exist
+            if record.args:
+                if isinstance(record.args, dict):
+                    record.args = {k: clean_ascii(str(v)) for k, v in record.args.items()}
+                elif isinstance(record.args, tuple):
+                    record.args = tuple(clean_ascii(str(arg)) for arg in record.args)
+        except Exception:
+            pass  # If cleaning fails, let the original message through
+        return True
+
+# Setup logging (file + console, UTF-8 safe)
+log_format = logging.Formatter('[%(asctime)s] %(name)s - %(levelname)s - %(message)s')
+
+# Create logs directory
+os.makedirs('logs', exist_ok=True)
+
+# File handler with UTF-8 encoding
+file_handler = logging.FileHandler('logs/clipscript_unified.log', encoding='utf-8')
+file_handler.setLevel(logging.INFO)
+file_handler.setFormatter(log_format)
+file_handler.addFilter(AsciiLoggingFilter())  # Ensure ASCII-safe logging
+
+# Console handler with safe encoding for Windows
+try:
+    # Reconfigure stdout to replace problematic characters
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+except:
+    pass
+console_handler = logging.StreamHandler(sys.stdout)
+console_handler.setLevel(logging.INFO)
+console_handler.setFormatter(log_format)
+console_handler.addFilter(AsciiLoggingFilter())  # Ensure ASCII-safe logging
+
+# Root logger
+root_logger = logging.getLogger()
+root_logger.setLevel(logging.INFO)
+root_logger.addHandler(file_handler)
+root_logger.addHandler(console_handler)
+
+logger = logging.getLogger(__name__)
+
+
 
 # Initialize Flask app
 app = Flask(__name__)
